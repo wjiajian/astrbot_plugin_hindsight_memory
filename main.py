@@ -9,7 +9,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 
 from .commands import PluginStateStore, build_help_text, run_manual_recall
-from .hindsight_client import HindsightClient
+from .hindsight_client import HindsightClient, HindsightClientError
 from .memory_formatter import format_recall_results
 from .scope import MemoryScope, build_scope_from_event
 
@@ -42,13 +42,13 @@ class HindsightMemoryPlugin(Star):
         try:
             raw = await client.recall(bank_id=self._bank_id(), query=query, tags=scope.tags)
             formatted = format_recall_results(raw, limit=self._recall_limit())
-        except Exception as exc:
+        except HindsightClientError as exc:
             _log_warning(f"Hindsight recall failed: {exc}")
             return
 
         if not formatted:
             return
-        if not hasattr(req, "extra_user_content_parts") or TextPart is None:
+        if not hasattr(req, "extra_user_content_parts"):
             _log_warning("ProviderRequest does not support extra_user_content_parts; skip Hindsight injection.")
             return
 
@@ -75,11 +75,11 @@ class HindsightMemoryPlugin(Star):
                 tags=scope.tags,
                 metadata=scope.metadata,
             )
-        except Exception as exc:
+        except HindsightClientError as exc:
             _log_warning(f"Hindsight retain failed: {exc}")
 
     @filter.command_group("hindsight")
-    def hindsight(self):
+    def hindsight(self, event: AstrMessageEvent):
         pass
 
     @hindsight.command("status")
@@ -126,7 +126,7 @@ class HindsightMemoryPlugin(Star):
                 tags=scope.tags,
                 limit=self._recall_limit(),
             )
-        except Exception as exc:
+        except HindsightClientError as exc:
             _log_warning(f"Hindsight manual recall failed: {exc}")
             result = f"手动检索失败：{exc}"
         yield event.plain_result(result)
@@ -210,7 +210,7 @@ def _event_looks_like_group(event: Any) -> bool:
     if callable(method):
         try:
             return str(method()).lower() == "group"
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return False
     message_obj = getattr(event, "message_obj", None)
     message_type = getattr(message_obj, "type", None) or getattr(message_obj, "message_type", None)

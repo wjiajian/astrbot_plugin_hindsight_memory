@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import secrets
-from typing import Any
+from typing import TYPE_CHECKING
 
 from .memory_formatter import format_recall_results
+
+if TYPE_CHECKING:
+    from .hindsight_client import HindsightClient
 
 
 SALT_FILE = "salt.txt"
@@ -79,7 +82,7 @@ def build_help_text(scope_enabled: bool | None = None) -> str:
     return "\n".join(lines)
 
 
-async def run_manual_recall(client: Any, bank_id: str, query: str, tags: list[str], limit: int) -> str:
+async def run_manual_recall(client: HindsightClient, bank_id: str, query: str, tags: list[str], limit: int) -> str:
     raw = await client.recall(bank_id=bank_id, query=query, tags=tags)
     formatted = format_recall_results(raw, limit=limit)
     if not formatted:

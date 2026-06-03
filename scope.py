@@ -83,7 +83,7 @@ def _event_value(event: Any, method_name: str, attr_name: str) -> str | None:
     if callable(method):
         try:
             value = method()
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             value = None
         if value not in (None, ""):
             return str(value)

@@ -4,6 +4,7 @@ from typing import Any
 
 
 DEFAULT_ITEM_MAX_CHARS = 360
+MAX_EXTRACT_DEPTH = 4
 
 
 def format_recall_results(raw: Any, limit: int, item_max_chars: int = DEFAULT_ITEM_MAX_CHARS) -> str:
@@ -38,11 +39,20 @@ def extract_memories(raw: Any) -> list[Any]:
     return []
 
 
-def _extract_text(memory: Any) -> str:
+def _extract_text(memory: Any, depth: int = 0, seen: set[int] | None = None) -> str:
+    if depth > MAX_EXTRACT_DEPTH:
+        return ""
     if isinstance(memory, str):
         return memory
     if not isinstance(memory, dict):
         return ""
+
+    if seen is None:
+        seen = set()
+    memory_id = id(memory)
+    if memory_id in seen:
+        return ""
+    seen.add(memory_id)
 
     for key in ("text", "content", "memory", "fact", "summary"):
         value = memory.get(key)
@@ -51,11 +61,11 @@ def _extract_text(memory: Any) -> str:
 
     nested = memory.get("memory")
     if isinstance(nested, dict):
-        return _extract_text(nested)
+        return _extract_text(nested, depth + 1, seen)
 
     observation = memory.get("observation")
     if isinstance(observation, dict):
-        return _extract_text(observation)
+        return _extract_text(observation, depth + 1, seen)
 
     return ""
 

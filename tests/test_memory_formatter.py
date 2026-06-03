@@ -33,6 +33,21 @@ class MemoryFormatterTests(unittest.TestCase):
 
         self.assertEqual(formatted, "")
 
+    def test_cyclic_nested_memory_does_not_recurse_forever(self):
+        memory = {}
+        memory["memory"] = memory
+
+        formatted = format_recall_results({"results": [memory]}, 5)
+
+        self.assertEqual(formatted, "")
+
+    def test_too_deep_nested_memory_is_ignored(self):
+        raw = {"results": [{"memory": {"memory": {"memory": {"memory": {"memory": {"text": "too deep"}}}}}}]}
+
+        formatted = format_recall_results(raw, 5)
+
+        self.assertEqual(formatted, "")
+
 
 if __name__ == "__main__":
     unittest.main()

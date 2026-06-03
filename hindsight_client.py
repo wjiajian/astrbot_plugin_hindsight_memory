@@ -10,7 +10,16 @@ RECALL_TYPES = ["world", "experience", "observation"]
 
 
 class HindsightClientError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        kind: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -20,10 +29,17 @@ class HindsightStatus:
 
 
 class HindsightClient:
-    def __init__(self, api_base: str, api_key: str, timeout_seconds: int = 8) -> None:
+    def __init__(
+        self,
+        api_base: str,
+        api_key: str,
+        timeout_seconds: int = 8,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key.strip()
         self.timeout = httpx.Timeout(float(timeout_seconds))
+        self.transport = transport
 
     async def recall(self, bank_id: str, query: str, tags: list[str]) -> dict[str, Any]:
         payload = {
@@ -57,18 +73,18 @@ class HindsightClient:
     async def check_status(self, bank_id: str) -> HindsightStatus:
         try:
             await self._request_json("GET", f"/v1/default/banks/{bank_id}/tags", params={"limit": 1})
-        except httpx.TimeoutException:
-            return HindsightStatus(False, "连接超时，请检查网络或 request_timeout_seconds。")
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
+        except HindsightClientError as exc:
+            if exc.kind == "timeout":
+                return HindsightStatus(False, "连接超时，请检查网络或 request_timeout_seconds。")
+            status = exc.status_code
             if status == 401:
                 return HindsightStatus(False, "认证失败：API Key 无效或未提供。")
             if status == 403:
                 return HindsightStatus(False, "权限不足：请确认 API Key 有访问该 Bank 的权限。")
             if status == 404:
                 return HindsightStatus(False, "Bank 不存在：请检查 bank_id。")
-            return HindsightStatus(False, f"Hindsight 返回 HTTP {status}。")
-        except Exception as exc:
+            if status is not None:
+                return HindsightStatus(False, f"Hindsight 返回 HTTP {status}。")
             return HindsightStatus(False, f"连接失败：{exc}")
         return HindsightStatus(True, "Hindsight Cloud 连接正常。")
 
@@ -77,13 +93,30 @@ class HindsightClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(base_url=self.api_base, timeout=self.timeout, headers=headers) as client:
-            response = await client.request(method, path, **kwargs)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise HindsightClientError("Hindsight returned invalid JSON") from exc
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.api_base,
+                timeout=self.timeout,
+                headers=headers,
+                transport=self.transport,
+            ) as client:
+                response = await client.request(method, path, **kwargs)
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    raise HindsightClientError("Hindsight returned invalid JSON") from exc
+        except httpx.TimeoutException as exc:
+            raise HindsightClientError("Hindsight request timed out", kind="timeout") from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            raise HindsightClientError(
+                f"Hindsight returned HTTP {status_code}",
+                status_code=status_code,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HindsightClientError(f"Hindsight request failed: {exc}") from exc
+
         if not isinstance(data, dict):
             raise HindsightClientError("Hindsight returned an unexpected response shape")
         return data

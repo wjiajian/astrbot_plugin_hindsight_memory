@@ -62,34 +62,25 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HindsightClientError):
             await client.recall("bank", "hello", [])
 
+    async def test_http_status_errors_are_wrapped(self):
+        async def handler(request):
+            return httpx.Response(403, json={"detail": "nope"})
+
+        client = _client_with_transport(handler)
+
+        with self.assertRaises(HindsightClientError) as context:
+            await client.recall("bank", "hello", [])
+
+        self.assertEqual(context.exception.status_code, 403)
+
 
 def _client_with_transport(handler):
-    client = HindsightClient("https://api.hindsight.vectorize.io", "hsk_test", 8)
-
-    async def request_json(method, path, **kwargs):
-        headers = {
-            "Authorization": f"Bearer {client.api_key}",
-            "Content-Type": "application/json",
-        }
-        transport = httpx.MockTransport(handler)
-        async with httpx.AsyncClient(
-            base_url=client.api_base,
-            timeout=client.timeout,
-            headers=headers,
-            transport=transport,
-        ) as http_client:
-            response = await http_client.request(method, path, **kwargs)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise HindsightClientError("Hindsight returned invalid JSON") from exc
-            if not isinstance(data, dict):
-                raise HindsightClientError("Hindsight returned an unexpected response shape")
-            return data
-
-    client._request_json = request_json
-    return client
+    return HindsightClient(
+        "https://api.hindsight.vectorize.io",
+        "hsk_test",
+        8,
+        transport=httpx.MockTransport(handler),
+    )
 
 
 if __name__ == "__main__":

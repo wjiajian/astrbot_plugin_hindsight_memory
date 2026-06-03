@@ -22,6 +22,12 @@ class StaticContractTests(unittest.TestCase):
         self.assertNotIn("get_astrbot_data_path", source)
         self.assertNotIn("\".data\"", source)
 
+    def test_main_keeps_framework_listener_signature_and_textpart_check_clean(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("def hindsight(self, event: AstrMessageEvent):", source)
+        self.assertNotIn("TextPart is None", source)
+
     def test_plugin_modules_do_not_use_absolute_import_fallbacks(self):
         main_source = (ROOT / "main.py").read_text(encoding="utf-8")
         commands_source = (ROOT / "commands.py").read_text(encoding="utf-8")
