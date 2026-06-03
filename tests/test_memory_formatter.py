@@ -26,7 +26,18 @@ class MemoryFormatterTests(unittest.TestCase):
     def test_truncates_long_memory(self):
         formatted = format_recall_results({"results": [{"text": "x" * 20}]}, 1, item_max_chars=10)
 
-        self.assertIn("- xxxxxxxxx...", formatted)
+        self.assertIn("- xxxxxxx...", formatted)
+
+    def test_truncated_text_never_exceeds_max_chars(self):
+        formatted = format_recall_results({"results": [{"text": "x" * 20}]}, 1, item_max_chars=10)
+        text = formatted.splitlines()[1].removeprefix("- ")
+
+        self.assertLessEqual(len(text), 10)
+
+    def test_tiny_truncate_limits_are_defensive(self):
+        formatted = format_recall_results({"results": [{"text": "abcdef"}]}, 1, item_max_chars=2)
+
+        self.assertIn("- ..", formatted)
 
     def test_ignores_raw_json_without_text_fields(self):
         formatted = format_recall_results({"results": [{"score": 0.9}]}, 5)

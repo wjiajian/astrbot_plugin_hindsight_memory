@@ -84,15 +84,51 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
 
         client = _client_with_transport(handler)
 
-        shared_client = client.client
+        self.assertIsNone(client._client)
+
         await client.recall("bank", "first", [])
+        shared_client = client._client
         await client.recall("bank", "second", [])
 
-        self.assertIs(client.client, shared_client)
-        self.assertFalse(client.client.is_closed)
+        self.assertIs(client._client, shared_client)
+        self.assertIsNotNone(client._client)
+        self.assertFalse(client._client.is_closed)
 
         await client.aclose()
-        self.assertTrue(client.client.is_closed)
+        self.assertIsNone(client._client)
+
+    async def test_retries_transient_server_errors(self):
+        attempts = 0
+
+        async def handler(request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(502, json={"detail": "try again"})
+            return httpx.Response(200, json={"results": []})
+
+        client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
+
+        await client.recall("bank", "hello", [])
+
+        self.assertEqual(attempts, 2)
+
+    async def test_does_not_retry_client_errors(self):
+        attempts = 0
+
+        async def handler(request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(403, json={"detail": "nope"})
+
+        client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(HindsightClientError):
+            await client.recall("bank", "hello", [])
+
+        self.assertEqual(attempts, 1)
 
 
 def _client_with_transport(handler):
@@ -101,6 +137,7 @@ def _client_with_transport(handler):
         "hsk_test",
         8,
         transport=httpx.MockTransport(handler),
+        retry_base_delay_seconds=0,
     )
 
 

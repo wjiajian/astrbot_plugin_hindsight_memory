@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -7,6 +8,8 @@ import httpx
 
 
 RECALL_TYPES = ["world", "experience", "observation"]
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.25
 
 
 class HindsightClientError(RuntimeError):
@@ -35,17 +38,16 @@ class HindsightClient:
         api_key: str,
         timeout_seconds: int = 8,
         transport: httpx.AsyncBaseTransport | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_base_delay_seconds: float = DEFAULT_RETRY_BASE_DELAY_SECONDS,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key.strip()
         self.timeout = httpx.Timeout(float(timeout_seconds))
         self.transport = transport
-        self.client = httpx.AsyncClient(
-            base_url=self.api_base,
-            timeout=self.timeout,
-            headers=self._headers(),
-            transport=self.transport,
-        )
+        self.max_retries = max(0, max_retries)
+        self.retry_base_delay_seconds = max(0.0, retry_base_delay_seconds)
+        self._client: httpx.AsyncClient | None = None
 
     async def recall(self, bank_id: str, query: str, tags: list[str]) -> dict[str, Any]:
         payload = {
@@ -95,11 +97,24 @@ class HindsightClient:
         return HindsightStatus(True, "Hindsight Cloud 连接正常。")
 
     async def aclose(self) -> None:
-        await self.client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self._request_json_once(method, path, **kwargs)
+            except HindsightClientError as exc:
+                if attempt >= self.max_retries or not _should_retry(exc):
+                    raise
+                await asyncio.sleep(self.retry_base_delay_seconds * (2**attempt))
+        raise HindsightClientError("Hindsight request failed after retries")
+
+    async def _request_json_once(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            response = await self.client.request(method, path, **kwargs)
+            client = await self._get_client()
+            response = await client.request(method, path, **kwargs)
             response.raise_for_status()
             try:
                 data = response.json()
@@ -112,16 +127,33 @@ class HindsightClient:
             raise HindsightClientError(
                 f"Hindsight returned HTTP {status_code}",
                 status_code=status_code,
+                kind="http_status",
             ) from exc
         except httpx.RequestError as exc:
-            raise HindsightClientError(f"Hindsight request failed: {exc}") from exc
+            raise HindsightClientError(f"Hindsight request failed: {exc}", kind="network") from exc
 
         if not isinstance(data, dict):
             raise HindsightClientError("Hindsight returned an unexpected response shape")
         return data
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.api_base,
+                timeout=self.timeout,
+                headers=self._headers(),
+                transport=self.transport,
+            )
+        return self._client
 
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+
+def _should_retry(exc: HindsightClientError) -> bool:
+    if exc.kind in {"timeout", "network"}:
+        return True
+    return exc.status_code is not None and exc.status_code >= 500

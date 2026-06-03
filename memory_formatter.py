@@ -79,6 +79,10 @@ def _normalize_text(text: str) -> str:
 
 
 def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
         return text
-    return text[: max_chars - 1].rstrip() + "..."
+    if max_chars <= 3:
+        return "." * max_chars
+    return text[: max_chars - 3].rstrip() + "..."
