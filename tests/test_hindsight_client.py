@@ -17,6 +17,7 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={"results": []})
 
         client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
 
         await client.recall("bank", "hello", ["scope:private"])
 
@@ -34,6 +35,7 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={"success": True})
 
         client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
 
         await client.retain("bank", "content", ["scope:group"], {"scope": "group"})
 
@@ -47,6 +49,7 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(401, json={"detail": "nope"})
 
         client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
 
         status = await client.check_status("bank")
 
@@ -58,6 +61,7 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, content=b"not-json")
 
         client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
 
         with self.assertRaises(HindsightClientError):
             await client.recall("bank", "hello", [])
@@ -67,11 +71,28 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(403, json={"detail": "nope"})
 
         client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
 
         with self.assertRaises(HindsightClientError) as context:
             await client.recall("bank", "hello", [])
 
         self.assertEqual(context.exception.status_code, 403)
+
+    async def test_client_reuses_async_client_until_closed(self):
+        async def handler(request):
+            return httpx.Response(200, json={"results": []})
+
+        client = _client_with_transport(handler)
+
+        shared_client = client.client
+        await client.recall("bank", "first", [])
+        await client.recall("bank", "second", [])
+
+        self.assertIs(client.client, shared_client)
+        self.assertFalse(client.client.is_closed)
+
+        await client.aclose()
+        self.assertTrue(client.client.is_closed)
 
 
 def _client_with_transport(handler):

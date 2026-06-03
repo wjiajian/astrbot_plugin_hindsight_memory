@@ -6,6 +6,8 @@ import json
 import secrets
 from typing import TYPE_CHECKING
 
+from astrbot.api import logger
+
 from .memory_formatter import format_recall_results
 
 if TYPE_CHECKING:
@@ -54,7 +56,11 @@ class PluginStateStore:
             return ScopeSwitchState(disabled_scopes=set())
         try:
             raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Hindsight scope state file is invalid JSON: {self.state_path}: {exc}")
+            return ScopeSwitchState(disabled_scopes=set())
+        except OSError as exc:
+            logger.warning(f"Hindsight scope state file could not be read: {self.state_path}: {exc}")
             return ScopeSwitchState(disabled_scopes=set())
         disabled = raw.get("disabled_scopes", [])
         if not isinstance(disabled, list):

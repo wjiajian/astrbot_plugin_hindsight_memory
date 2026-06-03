@@ -61,11 +61,15 @@ def _extract_text(memory: Any, depth: int = 0, seen: set[int] | None = None) -> 
 
     nested = memory.get("memory")
     if isinstance(nested, dict):
-        return _extract_text(nested, depth + 1, seen)
+        text = _extract_text(nested, depth + 1, seen)
+        if text:
+            return text
 
     observation = memory.get("observation")
     if isinstance(observation, dict):
-        return _extract_text(observation, depth + 1, seen)
+        text = _extract_text(observation, depth + 1, seen)
+        if text:
+            return text
 
     return ""
 

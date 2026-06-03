@@ -23,6 +23,14 @@ class HindsightMemoryPlugin(Star):
         self.config = config or {}
         self.store = PluginStateStore(StarTools.get_data_dir())
         self.salt = self.store.get_or_create_salt()
+        self.hindsight_client = HindsightClient(
+            api_base=str(self.config.get("api_base") or "https://api.hindsight.vectorize.io"),
+            api_key=str(self.config.get("api_key") or ""),
+            timeout_seconds=int(self.config.get("request_timeout_seconds") or 8),
+        )
+
+    async def terminate(self):
+        await self.hindsight_client.aclose()
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -152,11 +160,7 @@ class HindsightMemoryPlugin(Star):
         yield event.plain_result(build_help_text(self.store.is_scope_enabled(scope.scope_key)))
 
     def _client(self) -> HindsightClient:
-        return HindsightClient(
-            api_base=str(self.config.get("api_base") or "https://api.hindsight.vectorize.io"),
-            api_key=str(self.config.get("api_key") or ""),
-            timeout_seconds=int(self.config.get("request_timeout_seconds") or 8),
-        )
+        return self.hindsight_client
 
     def _scope(self, event: AstrMessageEvent) -> MemoryScope:
         scope = build_scope_from_event(event, self.salt)

@@ -48,6 +48,20 @@ class MemoryFormatterTests(unittest.TestCase):
 
         self.assertEqual(formatted, "")
 
+    def test_empty_memory_branch_falls_back_to_observation_branch(self):
+        raw = {
+            "results": [
+                {
+                    "memory": {"score": 0.9},
+                    "observation": {"text": "Observation text should survive."},
+                }
+            ]
+        }
+
+        formatted = format_recall_results(raw, 5)
+
+        self.assertIn("Observation text should survive.", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()

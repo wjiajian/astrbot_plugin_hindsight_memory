@@ -40,6 +40,12 @@ class HindsightClient:
         self.api_key = api_key.strip()
         self.timeout = httpx.Timeout(float(timeout_seconds))
         self.transport = transport
+        self.client = httpx.AsyncClient(
+            base_url=self.api_base,
+            timeout=self.timeout,
+            headers=self._headers(),
+            transport=self.transport,
+        )
 
     async def recall(self, bank_id: str, query: str, tags: list[str]) -> dict[str, Any]:
         payload = {
@@ -88,24 +94,17 @@ class HindsightClient:
             return HindsightStatus(False, f"连接失败：{exc}")
         return HindsightStatus(True, "Hindsight Cloud 连接正常。")
 
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
         try:
-            async with httpx.AsyncClient(
-                base_url=self.api_base,
-                timeout=self.timeout,
-                headers=headers,
-                transport=self.transport,
-            ) as client:
-                response = await client.request(method, path, **kwargs)
-                response.raise_for_status()
-                try:
-                    data = response.json()
-                except ValueError as exc:
-                    raise HindsightClientError("Hindsight returned invalid JSON") from exc
+            response = await self.client.request(method, path, **kwargs)
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise HindsightClientError("Hindsight returned invalid JSON") from exc
         except httpx.TimeoutException as exc:
             raise HindsightClientError("Hindsight request timed out", kind="timeout") from exc
         except httpx.HTTPStatusError as exc:
@@ -120,3 +119,9 @@ class HindsightClient:
         if not isinstance(data, dict):
             raise HindsightClientError("Hindsight returned an unexpected response shape")
         return data
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
