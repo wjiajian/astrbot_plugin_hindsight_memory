@@ -1,67 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-try:
-    from astrbot.api import AstrBotConfig, logger
-    from astrbot.api.event import AstrMessageEvent, filter
-    from astrbot.api.provider import LLMResponse, ProviderRequest
-    from astrbot.api.star import Context, Star
-    from astrbot.core.agent.message import TextPart
-    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-except Exception:  # pragma: no cover - lets local checks import this file without AstrBot.
-    AstrBotConfig = dict  # type: ignore
-    logger = None  # type: ignore
-    AstrMessageEvent = Any  # type: ignore
-    LLMResponse = Any  # type: ignore
-    ProviderRequest = Any  # type: ignore
-    Context = Any  # type: ignore
-    TextPart = None  # type: ignore
-    get_astrbot_data_path = None  # type: ignore
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import LLMResponse, ProviderRequest
+from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.agent.message import TextPart
 
-    class Star:  # type: ignore
-        def __init__(self, context: Any = None) -> None:
-            self.context = context
-
-    class _NoopCommandGroup:
-        def __call__(self, func):
-            return self
-
-        def command(self, _name):
-            def decorator(func):
-                return func
-
-            return decorator
-
-    class _NoopFilter:
-        def on_llm_request(self):
-            def decorator(func):
-                return func
-
-            return decorator
-
-        def on_llm_response(self):
-            def decorator(func):
-                return func
-
-            return decorator
-
-        def command_group(self, _name):
-            return _NoopCommandGroup()
-
-    filter = _NoopFilter()  # type: ignore
-
-try:
-    from .commands import PluginStateStore, build_help_text, run_manual_recall
-    from .hindsight_client import HindsightClient
-    from .memory_formatter import format_recall_results
-    from .scope import MemoryScope, build_scope_from_event
-except ImportError:
-    from commands import PluginStateStore, build_help_text, run_manual_recall
-    from hindsight_client import HindsightClient
-    from memory_formatter import format_recall_results
-    from scope import MemoryScope, build_scope_from_event
+from .commands import PluginStateStore, build_help_text, run_manual_recall
+from .hindsight_client import HindsightClient
+from .memory_formatter import format_recall_results
+from .scope import MemoryScope, build_scope_from_event
 
 
 PLUGIN_NAME = "astrbot_plugin_hindsight_memory"
@@ -71,7 +21,7 @@ class HindsightMemoryPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
         super().__init__(context)
         self.config = config or {}
-        self.store = PluginStateStore(_plugin_data_dir(self))
+        self.store = PluginStateStore(StarTools.get_data_dir())
         self.salt = self.store.get_or_create_salt()
 
     @filter.on_llm_request()
@@ -245,12 +195,6 @@ class HindsightMemoryPlugin(Star):
             if assistant_text:
                 parts.append(f"Assistant replied: {assistant_text}")
         return "\n".join(parts)
-
-
-def _plugin_data_dir(plugin: Any) -> Path:
-    if get_astrbot_data_path is not None:
-        return Path(get_astrbot_data_path()) / "plugin_data" / getattr(plugin, "name", PLUGIN_NAME)
-    return Path(__file__).resolve().parent / ".data"
 
 
 def _event_text(event: Any) -> str:

@@ -6,10 +6,7 @@ import json
 import secrets
 from typing import Any
 
-try:
-    from .memory_formatter import format_recall_results
-except ImportError:
-    from memory_formatter import format_recall_results
+from .memory_formatter import format_recall_results
 
 
 SALT_FILE = "salt.txt"

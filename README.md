@@ -76,6 +76,28 @@ umo:<umo_hash>
 
 召回时固定使用 `tags_match: all_strict`，因此私聊只召回当前私聊 scope 的记忆，群聊只召回当前群聊 scope 的记忆。
 
+## ID 稳定性与迁移注意事项
+
+正常重启 AstrBot 通常不会改变记忆 scope。插件生成 tags 时会使用：
+
+- `platform_id`：AstrBot 平台名，例如 `aiocqhttp`、`qq_official`。
+- `sender_id`：平台提供的用户 ID。
+- `group_id`：平台提供的群 ID。
+- `unified_msg_origin`：AstrBot 的会话来源标识。
+- 本地 `salt`：插件首次运行时生成，并保存在 AstrBot 插件数据目录中。
+
+只要平台适配器、机器人账号和插件数据目录不变，重启后 hash 出来的 tags 应保持稳定，旧记忆可以继续召回。
+
+以下情况可能导致同一个用户或群生成不同 scope，从而召回不到旧记忆：
+
+- 删除或迁移时丢失插件数据目录，导致 `salt.txt` 重新生成。
+- 更换平台适配器，例如从 `aiocqhttp` 切换到 `qq_official`。
+- 更换机器人账号、QQ 官方应用或平台配置，导致平台侧用户 ID 变化。
+- 平台或 AstrBot 适配器更新后改变了 `sender_id`、`group_id`、`unified_msg_origin` 的生成方式。
+- 群聊事件暂时拿不到 `group_id`，插件会降级为私聊 scope；之后如果又能拿到 `group_id`，scope 会发生变化。
+
+迁移 AstrBot 或插件时，建议同时备份插件数据目录中的 `salt.txt` 和 `scope_state.json`。其中 `salt.txt` 会影响历史记忆是否还能被同一 scope 召回，`scope_state.json` 保存 `/hindsight on` 和 `/hindsight off` 的当前会话开关状态。
+
 ## Hindsight API
 
 插件直接调用 Hindsight Cloud REST API，不依赖官方 SDK：
