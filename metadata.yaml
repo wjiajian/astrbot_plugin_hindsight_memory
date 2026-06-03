@@ -1,0 +1,12 @@
+name: astrbot_plugin_hindsight_memory
+display_name: Hindsight Memory
+author: JiaJian
+version: 0.1.0
+desc: Use Hindsight Cloud as scoped long-term memory for AstrBot private and group chats.
+short_desc: Scoped long-term memory backed by Hindsight Cloud.
+repo: https://github.com/wjiajian/astrbot_plugin_hindsight_memory
+astrbot_version: ">=4.9.2"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook

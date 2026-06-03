@@ -1,0 +1,61 @@
+{
+  "enabled": {
+    "description": "启用 Hindsight 长期记忆",
+    "type": "bool",
+    "default": true
+  },
+  "api_base": {
+    "description": "Hindsight Cloud API Base URL",
+    "type": "string",
+    "default": "https://api.hindsight.vectorize.io",
+    "hint": "默认使用 Hindsight Cloud。首版不支持自托管。"
+  },
+  "api_key": {
+    "description": "Hindsight Cloud API Key",
+    "type": "string",
+    "default": "",
+    "hint": "建议创建 Bank-scoped API Key。",
+    "obvious_hint": true
+  },
+  "bank_id": {
+    "description": "Hindsight Memory Bank ID",
+    "type": "string",
+    "default": "",
+    "hint": "在 Hindsight Cloud 后台创建 Memory Bank 后填写。"
+  },
+  "enable_private_memory": {
+    "description": "启用私聊记忆",
+    "type": "bool",
+    "default": true
+  },
+  "enable_group_memory": {
+    "description": "启用群聊记忆",
+    "type": "bool",
+    "default": true
+  },
+  "recall_limit": {
+    "description": "每轮最多注入的记忆条数",
+    "type": "int",
+    "default": 5
+  },
+  "retain_enabled": {
+    "description": "启用回复后写入 Hindsight",
+    "type": "bool",
+    "default": true
+  },
+  "retain_user_message": {
+    "description": "写入用户本轮消息",
+    "type": "bool",
+    "default": true
+  },
+  "retain_assistant_message": {
+    "description": "写入助手本轮回复",
+    "type": "bool",
+    "default": true
+  },
+  "request_timeout_seconds": {
+    "description": "Hindsight 请求超时时间（秒）",
+    "type": "int",
+    "default": 8
+  }
+}
