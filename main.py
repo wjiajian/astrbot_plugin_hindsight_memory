@@ -8,10 +8,10 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 
-from .commands import PluginStateStore, build_help_text, run_manual_recall
+from .commands import PluginStateStore, build_help_text, run_manual_recall_for_tag_sets
 from .hindsight_client import HindsightClient, HindsightClientError
-from .memory_formatter import format_recall_results
-from .scope import MemoryScope, build_scope_from_event
+from .memory_formatter import extract_memories, format_recall_results
+from .scope import MemoryScope, MemoryScopes, build_scopes_from_event
 
 
 PLUGIN_NAME = "astrbot_plugin_hindsight_memory"
@@ -23,21 +23,19 @@ class HindsightMemoryPlugin(Star):
         self.config = config or {}
         self.store = PluginStateStore(StarTools.get_data_dir())
         self.salt = self.store.get_or_create_salt()
-        self.hindsight_client = HindsightClient(
-            api_base=str(self.config.get("api_base") or "https://api.hindsight.vectorize.io"),
-            api_key=str(self.config.get("api_key") or ""),
-            timeout_seconds=int(self.config.get("request_timeout_seconds") or 8),
-        )
+        self.hindsight_client: HindsightClient | None = None
+        self.hindsight_client_signature: tuple[str, str, int] | None = None
 
     async def terminate(self):
-        await self.hindsight_client.aclose()
+        if self.hindsight_client is not None:
+            await self.hindsight_client.aclose()
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self._base_enabled():
             return
-        scope = self._scope(event)
-        if not self._scope_type_enabled(scope) or not self.store.is_scope_enabled(scope.scope_key):
+        scopes = self._scopes(event)
+        if not self._scope_type_enabled(scopes.primary) or not self.store.is_scope_enabled(scopes.primary.scope_key):
             return
         if not self._config_complete():
             return
@@ -46,10 +44,13 @@ class HindsightMemoryPlugin(Star):
         if not query:
             return
 
-        client = self._client()
+        client = await self._client()
         try:
-            raw = await client.recall(bank_id=self._bank_id(), query=query, tags=scope.tags)
-            formatted = format_recall_results(raw, limit=self._recall_limit())
+            memories = []
+            for recall_scope in scopes.recall_scopes:
+                raw = await client.recall(bank_id=self._bank_id(), query=query, tags=recall_scope.tags)
+                memories.extend(extract_memories(raw))
+            formatted = format_recall_results(memories, limit=self._recall_limit())
         except HindsightClientError as exc:
             _log_warning(f"Hindsight recall failed: {exc}")
             return
@@ -66,8 +67,8 @@ class HindsightMemoryPlugin(Star):
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
         if not self._base_enabled() or not _bool_config(self.config, "retain_enabled", True):
             return
-        scope = self._scope(event)
-        if not self._scope_type_enabled(scope) or not self.store.is_scope_enabled(scope.scope_key):
+        scopes = self._scopes(event)
+        if not self._scope_type_enabled(scopes.primary) or not self.store.is_scope_enabled(scopes.primary.scope_key):
             return
         if not self._config_complete():
             return
@@ -77,12 +78,14 @@ class HindsightMemoryPlugin(Star):
             return
 
         try:
-            await self._client().retain(
-                bank_id=self._bank_id(),
-                content=content,
-                tags=scope.tags,
-                metadata=scope.metadata,
-            )
+            client = await self._client()
+            for retain_scope in scopes.retain_scopes:
+                await client.retain(
+                    bank_id=self._bank_id(),
+                    content=content,
+                    tags=retain_scope.tags,
+                    metadata=retain_scope.metadata,
+                )
         except HindsightClientError as exc:
             _log_warning(f"Hindsight retain failed: {exc}")
 
@@ -93,7 +96,7 @@ class HindsightMemoryPlugin(Star):
     @hindsight.command("status")
     async def hindsight_status(self, event: AstrMessageEvent):
         """检查 Hindsight Memory 配置和连接状态。"""
-        scope = self._scope(event)
+        scope = self._scopes(event).primary
         lines = [
             "Hindsight Memory 状态",
             f"全局启用：{'是' if self._base_enabled() else '否'}",
@@ -102,7 +105,7 @@ class HindsightMemoryPlugin(Star):
             f"配置完整：{'是' if self._config_complete() else '否'}",
         ]
         if self._config_complete():
-            status = await self._client().check_status(self._bank_id())
+            status = await (await self._client()).check_status(self._bank_id())
             lines.append(f"连接检查：{status.message}")
         else:
             lines.append("连接检查：跳过，请先填写 api_key 和 bank_id。")
@@ -118,7 +121,8 @@ class HindsightMemoryPlugin(Star):
             yield event.plain_result("配置不完整，请先填写 api_key 和 bank_id。")
             return
 
-        scope = self._scope(event)
+        scopes = self._scopes(event)
+        scope = scopes.primary
         if not self._scope_type_enabled(scope):
             yield event.plain_result(f"当前 {scope.scope_type} scope 的记忆未启用。")
             return
@@ -127,11 +131,11 @@ class HindsightMemoryPlugin(Star):
             return
 
         try:
-            result = await run_manual_recall(
-                self._client(),
+            result = await run_manual_recall_for_tag_sets(
+                await self._client(),
                 bank_id=self._bank_id(),
                 query=query,
-                tags=scope.tags,
+                tag_sets=[recall_scope.tags for recall_scope in scopes.recall_scopes],
                 limit=self._recall_limit(),
             )
         except HindsightClientError as exc:
@@ -142,31 +146,52 @@ class HindsightMemoryPlugin(Star):
     @hindsight.command("on")
     async def hindsight_on(self, event: AstrMessageEvent):
         """启用当前会话的 Hindsight 记忆。"""
-        scope = self._scope(event)
+        scope = self._scopes(event).primary
         self.store.set_scope_enabled(scope.scope_key, True)
         yield event.plain_result("已启用当前会话 Hindsight 记忆。")
 
     @hindsight.command("off")
     async def hindsight_off(self, event: AstrMessageEvent):
         """关闭当前会话的 Hindsight 记忆。"""
-        scope = self._scope(event)
+        scope = self._scopes(event).primary
         self.store.set_scope_enabled(scope.scope_key, False)
         yield event.plain_result("已关闭当前会话 Hindsight 记忆。")
 
     @hindsight.command("help")
     async def hindsight_help(self, event: AstrMessageEvent):
         """显示 Hindsight Memory 命令帮助。"""
-        scope = self._scope(event)
+        scope = self._scopes(event).primary
         yield event.plain_result(build_help_text(self.store.is_scope_enabled(scope.scope_key)))
 
-    def _client(self) -> HindsightClient:
+    async def _client(self) -> HindsightClient:
+        signature = self._client_signature()
+        if self.hindsight_client is not None and self.hindsight_client_signature == signature:
+            return self.hindsight_client
+
+        if self.hindsight_client is not None:
+            await self.hindsight_client.aclose()
+
+        api_base, api_key, timeout_seconds = signature
+        self.hindsight_client = HindsightClient(
+            api_base=api_base,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+        self.hindsight_client_signature = signature
         return self.hindsight_client
 
-    def _scope(self, event: AstrMessageEvent) -> MemoryScope:
-        scope = build_scope_from_event(event, self.salt)
-        if scope.scope_type == "private" and _event_looks_like_group(event):
+    def _client_signature(self) -> tuple[str, str, int]:
+        return (
+            str(self.config.get("api_base") or "https://api.hindsight.vectorize.io"),
+            str(self.config.get("api_key") or ""),
+            self._request_timeout_seconds(),
+        )
+
+    def _scopes(self, event: AstrMessageEvent) -> MemoryScopes:
+        scopes = build_scopes_from_event(event, self.salt)
+        if scopes.primary.scope_type == "private" and _event_looks_like_group(event):
             _log_debug("Hindsight scope fallback: group-like event has no group_id; using private scope.")
-        return scope
+        return scopes
 
     def _base_enabled(self) -> bool:
         return _bool_config(self.config, "enabled", True)
@@ -183,8 +208,14 @@ class HindsightMemoryPlugin(Star):
         except (TypeError, ValueError):
             return 5
 
+    def _request_timeout_seconds(self) -> int:
+        try:
+            return max(1, int(self.config.get("request_timeout_seconds") or 8))
+        except (TypeError, ValueError):
+            return 8
+
     def _scope_type_enabled(self, scope: MemoryScope) -> bool:
-        if scope.scope_type == "group":
+        if scope.scope_type in {"group_shared", "group_member"}:
             return _bool_config(self.config, "enable_group_memory", True)
         return _bool_config(self.config, "enable_private_memory", True)
 

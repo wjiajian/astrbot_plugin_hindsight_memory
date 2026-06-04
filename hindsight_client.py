@@ -56,7 +56,12 @@ class HindsightClient:
             "tags": tags,
             "tags_match": "all_strict",
         }
-        return await self._request_json("POST", f"/v1/default/banks/{bank_id}/memories/recall", json=payload)
+        return await self._request_json(
+            "POST",
+            f"/v1/default/banks/{bank_id}/memories/recall",
+            retryable=True,
+            json=payload,
+        )
 
     async def retain(
         self,
@@ -76,11 +81,21 @@ class HindsightClient:
             "async": True,
             "items": [item],
         }
-        return await self._request_json("POST", f"/v1/default/banks/{bank_id}/memories", json=payload)
+        return await self._request_json(
+            "POST",
+            f"/v1/default/banks/{bank_id}/memories",
+            retryable=False,
+            json=payload,
+        )
 
     async def check_status(self, bank_id: str) -> HindsightStatus:
         try:
-            await self._request_json("GET", f"/v1/default/banks/{bank_id}/tags", params={"limit": 1})
+            await self._request_json(
+                "GET",
+                f"/v1/default/banks/{bank_id}/tags",
+                retryable=True,
+                params={"limit": 1},
+            )
         except HindsightClientError as exc:
             if exc.kind == "timeout":
                 return HindsightStatus(False, "连接超时，请检查网络或 request_timeout_seconds。")
@@ -101,12 +116,20 @@ class HindsightClient:
             await self._client.aclose()
             self._client = None
 
-    async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        for attempt in range(self.max_retries + 1):
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        retryable: bool,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        attempts = self.max_retries + 1 if retryable else 1
+        for attempt in range(attempts):
             try:
                 return await self._request_json_once(method, path, **kwargs)
             except HindsightClientError as exc:
-                if attempt >= self.max_retries or not _should_retry(exc):
+                if attempt >= attempts - 1 or not _should_retry(exc):
                     raise
                 await asyncio.sleep(self.retry_base_delay_seconds * (2**attempt))
         raise HindsightClientError("Hindsight request failed after retries")

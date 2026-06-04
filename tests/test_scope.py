@@ -1,6 +1,6 @@
 import unittest
 
-from scope import build_scope_from_event
+from scope import build_scope_from_event, build_scopes_from_event
 
 
 class FakeEvent:
@@ -32,16 +32,29 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(any(tag.startswith("umo:") for tag in scope.tags))
         self.assertNotIn("alice", " ".join(scope.tags))
 
-    def test_group_scope_hashes_group_and_omits_sender_tag(self):
+    def test_group_scope_uses_current_member_as_primary_scope(self):
         scope = build_scope_from_event(
             FakeEvent(group="group-1", umo="telegram:group:group-1"), "salt"
         )
 
-        self.assertEqual(scope.scope_type, "group")
+        self.assertEqual(scope.scope_type, "group_member")
         self.assertIn("scope:group", scope.tags)
+        self.assertIn("scope:group_member", scope.tags)
         self.assertTrue(any(tag.startswith("group:") for tag in scope.tags))
-        self.assertFalse(any(tag.startswith("sender:") for tag in scope.tags))
+        self.assertTrue(any(tag.startswith("sender:") for tag in scope.tags))
         self.assertNotIn("group-1", " ".join(scope.tags))
+        self.assertNotIn("alice", " ".join(scope.tags))
+
+    def test_group_scopes_include_shared_and_member_layers(self):
+        scopes = build_scopes_from_event(
+            FakeEvent(group="group-1", umo="telegram:group:group-1"), "salt"
+        )
+
+        self.assertEqual(scopes.primary.scope_type, "group_member")
+        self.assertEqual([scope.scope_type for scope in scopes.recall_scopes], ["group_shared", "group_member"])
+        self.assertEqual([scope.scope_type for scope in scopes.retain_scopes], ["group_shared", "group_member"])
+        self.assertFalse(any(tag.startswith("sender:") for tag in scopes.recall_scopes[0].tags))
+        self.assertTrue(any(tag.startswith("sender:") for tag in scopes.recall_scopes[1].tags))
 
     def test_missing_group_id_falls_back_to_private(self):
         scope = build_scope_from_event(FakeEvent(group=""), "salt")

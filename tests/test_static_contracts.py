@@ -28,6 +28,14 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn("def hindsight(self, event: AstrMessageEvent):", source)
         self.assertNotIn("TextPart is None", source)
 
+    def test_main_uses_config_aware_async_client_factory(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("async def _client(self) -> HindsightClient:", source)
+        self.assertIn("self.hindsight_client_signature", source)
+        self.assertIn("await self.hindsight_client.aclose()", source)
+        self.assertNotIn("self.hindsight_client = HindsightClient(\n            api_base=str(self.config.get", source)
+
     def test_plugin_modules_do_not_use_absolute_import_fallbacks(self):
         main_source = (ROOT / "main.py").read_text(encoding="utf-8")
         commands_source = (ROOT / "commands.py").read_text(encoding="utf-8")

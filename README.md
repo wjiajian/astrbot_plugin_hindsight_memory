@@ -11,7 +11,7 @@ Hindsight 是一个面向 AI 应用的长期记忆服务，可以把对话中的
 - 在每次 LLM 请求前，从 Hindsight Cloud 召回相关记忆。
 - 通过 `extra_user_content_parts` 注入临时 `<hindsight_memory>` 内容，不写入 AstrBot 持久会话历史。
 - 在 LLM 回复后，将本轮用户消息和助手回复写入 Hindsight Cloud。
-- 私聊和群聊严格按 scope 隔离，避免跨会话、跨群召回。
+- 私聊和群聊严格按 scope 隔离，群聊使用“群公共记忆 + 群成员个人记忆”双层召回，避免同群不同用户的个人记忆互相串扰。
 - 发送到 Hindsight 的 sender ID、group ID、`unified_msg_origin` 都会先做 hash。
 - 提供 `/hindsight` 命令，用于状态检查、手动召回和当前会话临时开关。
 
@@ -65,16 +65,30 @@ sender:<sender_id_hash>
 umo:<umo_hash>
 ```
 
-群聊使用以下 tags：
+群聊使用双层 tags。
+
+群公共记忆：
 
 ```text
 scope:group
+scope:group_shared
 platform:<platform_id>
 group:<group_id_hash>
 umo:<umo_hash>
 ```
 
-召回时固定使用 `tags_match: all_strict`，因此私聊只召回当前私聊 scope 的记忆，群聊只召回当前群聊 scope 的记忆。
+群成员个人记忆：
+
+```text
+scope:group
+scope:group_member
+platform:<platform_id>
+group:<group_id_hash>
+sender:<sender_id_hash>
+umo:<umo_hash>
+```
+
+召回时固定使用 `tags_match: all_strict`。私聊只召回当前私聊 scope 的记忆；群聊会同时召回当前群的公共记忆和当前发言成员在该群内的个人记忆。写入时也会同时写入群公共层和群成员个人层，便于后续在 Hindsight Cloud 后台分别管理。
 
 ## ID 稳定性与迁移注意事项
 

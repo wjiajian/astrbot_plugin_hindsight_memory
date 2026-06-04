@@ -114,6 +114,22 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(attempts, 2)
 
+    async def test_retain_does_not_retry_transient_server_errors(self):
+        attempts = 0
+
+        async def handler(request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(502, json={"detail": "try again"})
+
+        client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(HindsightClientError):
+            await client.retain("bank", "content", ["scope:private"])
+
+        self.assertEqual(attempts, 1)
+
     async def test_does_not_retry_client_errors(self):
         attempts = 0
 

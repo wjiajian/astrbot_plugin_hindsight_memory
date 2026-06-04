@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
-from .memory_formatter import format_recall_results
+from .memory_formatter import extract_memories, format_recall_results
 
 if TYPE_CHECKING:
     from .hindsight_client import HindsightClient
@@ -89,8 +89,21 @@ def build_help_text(scope_enabled: bool | None = None) -> str:
 
 
 async def run_manual_recall(client: HindsightClient, bank_id: str, query: str, tags: list[str], limit: int) -> str:
-    raw = await client.recall(bank_id=bank_id, query=query, tags=tags)
-    formatted = format_recall_results(raw, limit=limit)
+    return await run_manual_recall_for_tag_sets(client, bank_id, query, [tags], limit)
+
+
+async def run_manual_recall_for_tag_sets(
+    client: HindsightClient,
+    bank_id: str,
+    query: str,
+    tag_sets: list[list[str]],
+    limit: int,
+) -> str:
+    memories = []
+    for tags in tag_sets:
+        raw = await client.recall(bank_id=bank_id, query=query, tags=tags)
+        memories.extend(extract_memories(raw))
+    formatted = format_recall_results(memories, limit=limit)
     if not formatted:
         return "当前会话 scope 下没有召回到相关记忆。"
     return formatted
