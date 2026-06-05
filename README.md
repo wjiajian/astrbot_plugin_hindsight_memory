@@ -10,7 +10,7 @@ Hindsight 是一个面向 AI 应用的长期记忆服务，可以把对话中的
 
 - 在每次 LLM 请求前，从 Hindsight Cloud 召回相关记忆。
 - 通过 `extra_user_content_parts` 注入临时 `<hindsight_memory>` 内容，不写入 AstrBot 持久会话历史。
-- 在 LLM 回复后，将本轮用户消息和助手回复写入 Hindsight Cloud。
+- 在 LLM 回复后，按写入判定策略将值得长期保存的内容写入 Hindsight Cloud。
 - 私聊和群聊严格按 scope 隔离，群聊使用“群公共记忆 + 群成员个人记忆”双层召回，避免同群不同用户的个人记忆互相串扰。
 - 发送到 Hindsight 的 sender ID、group ID、`unified_msg_origin` 都会先做 hash。
 - 提供 `/hindsight` 命令，用于状态检查、手动召回和当前会话临时开关。
@@ -43,6 +43,41 @@ Hindsight 是一个面向 AI 应用的长期记忆服务，可以把对话中的
 ```bash
 pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 ```
+
+## 配置项说明
+
+- `enabled`：全局启用或关闭插件。
+- `api_base`：Hindsight Cloud API Base URL，默认 `https://api.hindsight.vectorize.io`。
+- `api_key`：Hindsight Cloud API Key。
+- `bank_id`：Hindsight Memory Bank ID。
+- `enable_private_memory`：启用私聊记忆。
+- `enable_group_memory`：启用群聊记忆。
+- `recall_limit`：每轮最多注入的记忆条数。
+- `retain_enabled`：启用 LLM 回复后写入 Hindsight。
+- `retain_decision_mode`：写入判定模式，默认 `balanced`。`all` 保持旧行为，`balanced` 只自动写入较稳定的记忆，`strict` 只写入明确要求记住的内容。
+- `retain_min_chars`：自动写入判定的最小有效字符数，默认 `8`。
+- `retain_sensitive_requires_explicit`：邮箱、手机号、身份证等敏感信息必须明确要求记住才允许写入，默认开启；API Key、密码、token、private key 永不自动写入。
+- `retain_ai_enabled`：启用 AI 写入判定和记忆萃取，默认关闭。开启后会额外调用 AstrBot LLM Provider，并要求返回结构化 JSON。
+- `retain_ai_provider_id`：AI 写入判定使用的 AstrBot LLM 供应商。配置界面会显示 AstrBot 已有供应商；留空时才使用当前会话供应商。
+- `retain_ai_fallback_to_current_provider`：所选 AI 判定供应商调用失败时是否回退到当前会话供应商，默认关闭。
+- `retain_ai_min_confidence`：AI 判定最低置信度，默认 `0.7`。低于该值会跳过写入。
+- `retain_dedupe_enabled`：写入前先检索当前 scope，跳过高度相似的重复记忆，默认开启。
+- `retain_dedupe_threshold`：重复记忆相似度阈值，默认 `0.85`。
+- `retain_dedupe_limit`：写入前去重最多检查的历史记忆条数，默认 `5`。
+- `retain_write_raw_conversation`：写入原始本轮对话而不是精炼后的记忆文本，默认关闭；`retain_decision_mode=all` 始终保持原始对话写入。
+- `retain_user_message`：写入用户本轮消息。
+- `retain_assistant_message`：写入助手本轮回复。
+- `request_timeout_seconds`：Hindsight 请求超时时间，单位秒。
+
+## 写入判定策略
+
+默认写入流程分为三层：
+
+1. 规则预筛：跳过命令、寒暄、短文本、助手报错/拒答，并拦截 API Key、密码、token、private key。
+2. 记忆萃取：规则层会先生成精炼后的 `memory_text`；如果开启 `retain_ai_enabled`，会再让 `retain_ai_provider_id` 选择的 LLM Provider 输出更准确的 `memory_text`、scope、类型和置信度。未选择供应商时才使用当前会话供应商。
+3. 检索去重：写入前用 `memory_text` 在当前 scope recall，若相似度超过 `retain_dedupe_threshold` 则跳过；纠正类记忆会继续写入，并在 metadata 中标记为 `correction`。
+
+默认不会额外调用 LLM，但会写入精炼后的记忆文本，而不是整轮原始对话。需要兼容旧行为时，可设置 `retain_decision_mode=all`。
 
 ## 命令
 
@@ -88,7 +123,9 @@ sender:<sender_id_hash>
 umo:<umo_hash>
 ```
 
-召回时固定使用 `tags_match: all_strict`。私聊只召回当前私聊 scope 的记忆；群聊会同时召回当前群的公共记忆和当前发言成员在该群内的个人记忆。写入时也会同时写入群公共层和群成员个人层，便于后续在 Hindsight Cloud 后台分别管理。
+召回时固定使用 `tags_match: all_strict`。私聊只召回当前私聊 scope 的记忆；群聊会同时召回当前群的公共记忆和当前发言成员在该群内的个人记忆。默认写入判定会把“本群规则、群公告、项目约定”等内容写入群公共层，把“我喜欢、叫我、我的偏好”等内容写入群成员个人层；`retain_decision_mode=all` 时保持旧行为，同时写入群公共层和群成员个人层。
+
+写入 metadata 会附带 `retention_reason`、`retention_type`、`retention_source`、`retention_confidence` 和 `retention_action`，便于在 Hindsight Cloud 后台排查某条记忆来自规则、AI 萃取还是纠正/补充写入。
 
 ## ID 稳定性与迁移注意事项
 

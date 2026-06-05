@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import unittest
 
@@ -36,13 +37,55 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn("await self.hindsight_client.aclose()", source)
         self.assertNotIn("self.hindsight_client = HindsightClient(\n            api_base=str(self.config.get", source)
 
+    def test_config_contract_includes_retention_policy(self):
+        config = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+        for key in (
+            "retain_decision_mode",
+            "retain_min_chars",
+            "retain_sensitive_requires_explicit",
+            "retain_ai_enabled",
+            "retain_ai_provider_id",
+            "retain_ai_fallback_to_current_provider",
+            "retain_ai_min_confidence",
+            "retain_dedupe_enabled",
+            "retain_dedupe_threshold",
+            "retain_dedupe_limit",
+            "retain_write_raw_conversation",
+        ):
+            self.assertIn(key, config)
+        self.assertEqual(config["retain_decision_mode"]["default"], "balanced")
+        self.assertEqual(config["retain_min_chars"]["default"], 8)
+        self.assertIs(config["retain_sensitive_requires_explicit"]["default"], True)
+        self.assertIs(config["retain_ai_enabled"]["default"], False)
+        self.assertEqual(config["retain_ai_provider_id"]["default"], "")
+        self.assertEqual(config["retain_ai_provider_id"]["_special"], "select_provider")
+        self.assertIs(config["retain_ai_fallback_to_current_provider"]["default"], False)
+        self.assertEqual(config["retain_ai_min_confidence"]["default"], 0.7)
+        self.assertIs(config["retain_dedupe_enabled"]["default"], True)
+        self.assertEqual(config["retain_dedupe_threshold"]["default"], 0.85)
+        self.assertEqual(config["retain_dedupe_limit"]["default"], 5)
+        self.assertIs(config["retain_write_raw_conversation"]["default"], False)
+
+    def test_ai_retention_uses_selectable_llm_provider(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("retain_ai_provider_id", source)
+        self.assertIn("get_current_chat_provider_id", source)
+        self.assertIn("llm_generate", source)
+        self.assertIn("chat_provider_id", source)
+        self.assertNotIn("text_chat", source)
+        self.assertNotIn("get_using_provider", source)
+
     def test_plugin_modules_do_not_use_absolute_import_fallbacks(self):
         main_source = (ROOT / "main.py").read_text(encoding="utf-8")
         commands_source = (ROOT / "commands.py").read_text(encoding="utf-8")
 
         self.assertIn("from .commands import", main_source)
+        self.assertIn("from .retention_policy import", main_source)
         self.assertIn("from .memory_formatter import", commands_source)
         self.assertNotIn("from commands import", main_source)
+        self.assertNotIn("from retention_policy import", main_source)
         self.assertNotIn("from memory_formatter import", commands_source)
         self.assertNotIn("except ImportError", main_source)
         self.assertNotIn("except ImportError", commands_source)

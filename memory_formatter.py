@@ -39,6 +39,18 @@ def extract_memories(raw: Any) -> list[Any]:
     return []
 
 
+def extract_memory_texts(raw: Any, limit: int = 0) -> list[str]:
+    memories = extract_memories(raw)
+    if limit > 0:
+        memories = memories[:limit]
+    texts: list[str] = []
+    for memory in memories:
+        text = _extract_text(memory)
+        if text:
+            texts.append(_normalize_text(text))
+    return texts
+
+
 def _extract_text(memory: Any, depth: int = 0, seen: set[int] | None = None) -> str:
     if depth > MAX_EXTRACT_DEPTH:
         return ""
