@@ -12,6 +12,13 @@ from astrbot.core.agent.message import TextPart
 
 from .commands import PluginStateStore, build_help_text, run_manual_recall_for_tag_sets
 from .hindsight_client import HindsightClient, HindsightClientError
+from .memory_ai import (
+    build_recall_query_prompt,
+    memory_ai_enabled,
+    memory_ai_fallback_to_current_provider,
+    memory_ai_provider_id,
+    parse_recall_queries,
+)
 from .memory_formatter import extract_memories, extract_memory_texts, format_recall_results
 from .retention_policy import (
     RetainDecision,
@@ -19,6 +26,7 @@ from .retention_policy import (
     build_ai_retention_prompt,
     decide_retention,
     dedupe_action,
+    precheck_ai_retention,
     should_write_raw_conversation,
 )
 from .scope import MemoryScope, MemoryScopes, MissingScopeIdentityError, build_scopes_from_event
@@ -67,17 +75,18 @@ class HindsightMemoryPlugin(Star):
         if not query:
             return
 
-        client = await self._client()
         try:
-            memories = []
-            for recall_scope in scopes.recall_scopes:
-                raw = await client.recall(bank_id=self._bank_id(), query=query, tags=recall_scope.tags)
-                memories.extend(extract_memories(raw))
-            formatted = format_recall_results(
-                memories,
+            queries = await self._recall_queries(event, query)
+            formatted = await run_manual_recall_for_tag_sets(
+                await self._client(),
+                bank_id=self._bank_id(),
+                query=query,
+                tag_sets=[recall_scope.tags for recall_scope in scopes.recall_scopes],
                 limit=self._recall_limit(),
                 item_max_chars=self._recall_item_max_chars(),
                 max_extract_depth=self._memory_extract_max_depth(),
+                queries=queries,
+                empty_message="",
             )
         except HindsightClientError as exc:
             _log_warning(f"Hindsight recall failed: {exc}")
@@ -181,6 +190,7 @@ class HindsightMemoryPlugin(Star):
             return
 
         try:
+            queries = await self._recall_queries(event, query)
             result = await run_manual_recall_for_tag_sets(
                 await self._client(),
                 bank_id=self._bank_id(),
@@ -189,6 +199,7 @@ class HindsightMemoryPlugin(Star):
                 limit=self._recall_limit(),
                 item_max_chars=self._recall_item_max_chars(),
                 max_extract_depth=self._memory_extract_max_depth(),
+                queries=queries,
             )
         except HindsightClientError as exc:
             _log_warning(f"Hindsight manual recall failed: {exc}")
@@ -306,24 +317,38 @@ class HindsightMemoryPlugin(Star):
         assistant_text: str,
         primary_scope_type: str,
     ) -> RetainDecision:
-        decision = decide_retention(user_text, assistant_text, primary_scope_type, self.config)
-        if not decision.should_retain or decision.reason == "all_mode":
-            return decision
-        if not _bool_config(self.config, "retain_ai_enabled", False):
-            return decision
+        if memory_ai_enabled(self.config):
+            base_decision = precheck_ai_retention(user_text, assistant_text, primary_scope_type, self.config)
+            if not base_decision.should_retain:
+                return base_decision
 
-        prompt = build_ai_retention_prompt(user_text, assistant_text, primary_scope_type)
+            prompt = build_ai_retention_prompt(user_text, assistant_text, primary_scope_type)
+            try:
+                response_text = await _call_memory_ai(self._context, event, prompt, self.config, "retention")
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                _log_warning(f"Hindsight AI retention fallback to rules: {exc}")
+            else:
+                ai_decision = apply_ai_retention_result(base_decision, response_text, primary_scope_type, self.config)
+                if ai_decision is not None:
+                    return ai_decision
+                _log_warning("Hindsight AI retention returned invalid JSON; fallback to rules.")
+
+        return decide_retention(user_text, assistant_text, primary_scope_type, self.config)
+
+    async def _recall_queries(self, event: AstrMessageEvent, query: str) -> list[str]:
+        if not memory_ai_enabled(self.config):
+            return [query]
+        prompt = build_recall_query_prompt(query)
         try:
-            response_text = await _call_ai_retention(self._context, event, prompt, self.config)
+            response_text = await _call_memory_ai(self._context, event, prompt, self.config, "recall")
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-            _log_warning(f"Hindsight AI retention fallback to rules: {exc}")
-            return decision
-
-        ai_decision = apply_ai_retention_result(decision, response_text, primary_scope_type, self.config)
-        if ai_decision is None:
-            _log_warning("Hindsight AI retention returned invalid JSON; fallback to rules.")
-            return decision
-        return ai_decision
+            _log_warning(f"Hindsight AI recall query expansion fallback to original query: {exc}")
+            return [query]
+        queries = parse_recall_queries(response_text, query)
+        if not queries:
+            _log_warning("Hindsight AI recall query expansion returned no queries; fallback to original query.")
+            return [query]
+        return queries
 
     async def _retain_dedupe_action(
         self,
@@ -445,29 +470,35 @@ def _new_text_part(text: str) -> TextPart:
     raise TypeError("TextPart constructor does not accept a text value")
 
 
-async def _call_ai_retention(context: Context, event: AstrMessageEvent, prompt: str, config: ConfigLike) -> str:
-    provider_id = await _resolve_ai_provider_id(context, event, config)
+async def _call_memory_ai(
+    context: Context,
+    event: AstrMessageEvent,
+    prompt: str,
+    config: ConfigLike,
+    task: str,
+) -> str:
+    provider_id = await _resolve_memory_ai_provider_id(context, event, config)
     if not provider_id:
-        raise RuntimeError("no AI retention provider selected")
+        raise RuntimeError("no memory AI provider selected")
 
-    selected_provider_id = str(config.get("retain_ai_provider_id") or "").strip()
+    selected_provider_id = memory_ai_provider_id(config)
+    system_prompt = f"You support long-term memory {task}. Return JSON only."
     try:
-        return await _llm_generate_text(context, provider_id, prompt)
+        return await _llm_generate_text(context, provider_id, prompt, system_prompt)
     except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-        if not selected_provider_id or not _bool_config(config, "retain_ai_fallback_to_current_provider", False):
+        if not selected_provider_id or not memory_ai_fallback_to_current_provider(config):
             raise
         fallback_provider_id = await _current_chat_provider_id(context, event)
         if not fallback_provider_id or fallback_provider_id == selected_provider_id:
             raise
-        _log_warning(f"Hindsight AI retention selected provider failed; fallback to current provider: {exc}")
-        return await _llm_generate_text(context, fallback_provider_id, prompt)
+        _log_warning(f"Hindsight memory AI selected provider failed; fallback to current provider: {exc}")
+        return await _llm_generate_text(context, fallback_provider_id, prompt, system_prompt)
 
 
-async def _llm_generate_text(context: Context, provider_id: str, prompt: str) -> str:
+async def _llm_generate_text(context: Context, provider_id: str, prompt: str, system_prompt: str) -> str:
     llm_generate = getattr(context, "llm_generate", None)
     if not callable(llm_generate):
         raise RuntimeError("AstrBot context does not support llm_generate")
-    system_prompt = "You classify chat turns for long-term memory. Return JSON only."
     attempts = (
         {"chat_provider_id": provider_id, "prompt": prompt, "system_prompt": system_prompt},
         {"chat_provider_id": provider_id, "prompt": prompt},
@@ -485,8 +516,8 @@ async def _llm_generate_text(context: Context, provider_id: str, prompt: str) ->
     raise RuntimeError(f"llm_generate call failed: {last_error}")
 
 
-async def _resolve_ai_provider_id(context: Context, event: AstrMessageEvent, config: ConfigLike) -> str:
-    selected_provider_id = str(config.get("retain_ai_provider_id") or "").strip()
+async def _resolve_memory_ai_provider_id(context: Context, event: AstrMessageEvent, config: ConfigLike) -> str:
+    selected_provider_id = memory_ai_provider_id(config)
     if selected_provider_id:
         return selected_provider_id
     return await _current_chat_provider_id(context, event)
