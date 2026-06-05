@@ -38,10 +38,20 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
 
         await client.recall("bank", "hello", ["scope:private"])
 
+        self.assertEqual(client.api_base, "https://proxy.example.com/hindsight_api/")
         self.assertEqual(
             seen["url"],
             "https://proxy.example.com/hindsight_api/v1/default/banks/bank/memories/recall",
         )
+
+    async def test_api_base_trailing_slash_is_preserved(self):
+        async def handler(request):
+            return httpx.Response(200, json={"results": []})
+
+        client = _client_with_transport(handler, api_base="https://proxy.example.com/hindsight_api/")
+        self.addAsyncCleanup(client.aclose)
+
+        self.assertEqual(client.api_base, "https://proxy.example.com/hindsight_api/")
 
     async def test_retain_request_body_uses_async_item_level_tags(self):
         seen = {}
