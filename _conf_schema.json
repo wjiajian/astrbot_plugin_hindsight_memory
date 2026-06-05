@@ -38,6 +38,16 @@
     "type": "int",
     "default": 5
   },
+  "recall_item_max_chars": {
+    "description": "每条召回记忆注入前的最大字符数",
+    "type": "int",
+    "default": 360
+  },
+  "memory_extract_max_depth": {
+    "description": "解析召回结果嵌套结构的最大深度",
+    "type": "int",
+    "default": 4
+  },
   "retain_enabled": {
     "description": "启用回复后写入 Hindsight",
     "type": "bool",

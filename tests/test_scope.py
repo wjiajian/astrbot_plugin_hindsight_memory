@@ -1,6 +1,6 @@
 import unittest
 
-from scope import build_scope_from_event, build_scopes_from_event
+from scope import MissingScopeIdentityError, build_scope_from_event, build_scopes_from_event
 
 
 class FakeEvent:
@@ -55,6 +55,23 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual([scope.scope_type for scope in scopes.retain_scopes], ["group_shared", "group_member"])
         self.assertFalse(any(tag.startswith("sender:") for tag in scopes.recall_scopes[0].tags))
         self.assertTrue(any(tag.startswith("sender:") for tag in scopes.recall_scopes[1].tags))
+
+    def test_group_scope_requires_sender_id(self):
+        event = FakeEvent(sender="", group="group-1", umo="telegram:group:group-1")
+
+        with self.assertRaises(MissingScopeIdentityError):
+            build_scopes_from_event(event, "salt")
+
+    def test_private_scope_can_use_umo_when_sender_is_missing(self):
+        scope = build_scope_from_event(FakeEvent(sender="", umo="telegram:private:alice"), "salt")
+
+        self.assertEqual(scope.scope_type, "private")
+
+    def test_private_scope_requires_sender_or_umo(self):
+        event = FakeEvent(sender="", group=None, umo="")
+
+        with self.assertRaises(MissingScopeIdentityError):
+            build_scope_from_event(event, "salt")
 
     def test_missing_group_id_falls_back_to_private(self):
         scope = build_scope_from_event(FakeEvent(group=""), "salt")

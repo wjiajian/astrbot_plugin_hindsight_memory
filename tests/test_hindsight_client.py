@@ -26,6 +26,23 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["body"]["tags_match"], "all_strict")
         self.assertEqual(seen["body"]["types"], ["world", "experience", "observation"])
 
+    async def test_api_base_subpath_is_preserved(self):
+        seen = {}
+
+        async def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json={"results": []})
+
+        client = _client_with_transport(handler, api_base="https://proxy.example.com/hindsight_api")
+        self.addAsyncCleanup(client.aclose)
+
+        await client.recall("bank", "hello", ["scope:private"])
+
+        self.assertEqual(
+            seen["url"],
+            "https://proxy.example.com/hindsight_api/v1/default/banks/bank/memories/recall",
+        )
+
     async def test_retain_request_body_uses_async_item_level_tags(self):
         seen = {}
 
@@ -147,9 +164,9 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 1)
 
 
-def _client_with_transport(handler):
+def _client_with_transport(handler, api_base="https://api.hindsight.vectorize.io"):
     return HindsightClient(
-        "https://api.hindsight.vectorize.io",
+        api_base,
         "hsk_test",
         8,
         transport=httpx.MockTransport(handler),

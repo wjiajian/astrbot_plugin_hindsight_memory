@@ -34,6 +34,8 @@ Hindsight 是一个面向 AI 应用的长期记忆服务，可以把对话中的
    - `api_key`：Hindsight Cloud API Key
    - `bank_id`：Hindsight Memory Bank ID
    - `api_base`：保持默认值 `https://api.hindsight.vectorize.io`
+   - `recall_item_max_chars`：每条召回记忆注入前的最大字符数，默认 `360`
+   - `memory_extract_max_depth`：解析召回结果嵌套结构的最大深度，默认 `4`
 5. 保存配置后，重载插件或重启 AstrBot。
 
 插件依赖只包含 `httpx`，AstrBot 通常会根据 `requirements.txt` 自动安装。
@@ -53,6 +55,8 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 - `enable_private_memory`：启用私聊记忆。
 - `enable_group_memory`：启用群聊记忆。
 - `recall_limit`：每轮最多注入的记忆条数。
+- `recall_item_max_chars`：每条召回记忆注入前的最大字符数，默认 `360`。
+- `memory_extract_max_depth`：解析召回结果嵌套结构的最大深度，默认 `4`。
 - `retain_enabled`：启用 LLM 回复后写入 Hindsight。
 - `retain_decision_mode`：写入判定模式，默认 `balanced`。`all` 保持旧行为，`balanced` 只自动写入较稳定的记忆，`strict` 只写入明确要求记住的内容。
 - `retain_min_chars`：自动写入判定的最小有效字符数，默认 `8`。
@@ -146,6 +150,7 @@ umo:<umo_hash>
 - 更换机器人账号、QQ 官方应用或平台配置，导致平台侧用户 ID 变化。
 - 平台或 AstrBot 适配器更新后改变了 `sender_id`、`group_id`、`unified_msg_origin` 的生成方式。
 - 群聊事件暂时拿不到 `group_id`，插件会降级为私聊 scope；之后如果又能拿到 `group_id`，scope 会发生变化。
+- 群聊事件拿不到当前发言人的 `sender_id`，插件会跳过本轮记忆操作，避免多个未知用户被归入同一个个人记忆层。
 
 迁移 AstrBot 或插件时，建议同时备份插件数据目录中的 `salt.txt` 和 `scope_state.json`。其中 `salt.txt` 会影响历史记忆是否还能被同一 scope 召回，`scope_state.json` 保存 `/hindsight on` 和 `/hindsight off` 的当前会话开关状态。
 

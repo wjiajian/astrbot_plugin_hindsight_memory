@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import secrets
+import uuid
 from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
-from .memory_formatter import extract_memories, format_recall_results
+from .memory_formatter import DEFAULT_ITEM_MAX_CHARS, MAX_EXTRACT_DEPTH, extract_memories, format_recall_results
 
 if TYPE_CHECKING:
     from .hindsight_client import HindsightClient
@@ -69,9 +70,13 @@ class PluginStateStore:
 
     def _save_state(self, state: ScopeSwitchState) -> None:
         payload = {"disabled_scopes": sorted(state.disabled_scopes)}
-        tmp_path = self.state_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(self.state_path)
+        tmp_path = self.state_path.with_name(f"{self.state_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(self.state_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def build_help_text(scope_enabled: bool | None = None) -> str:
@@ -88,8 +93,24 @@ def build_help_text(scope_enabled: bool | None = None) -> str:
     return "\n".join(lines)
 
 
-async def run_manual_recall(client: HindsightClient, bank_id: str, query: str, tags: list[str], limit: int) -> str:
-    return await run_manual_recall_for_tag_sets(client, bank_id, query, [tags], limit)
+async def run_manual_recall(
+    client: HindsightClient,
+    bank_id: str,
+    query: str,
+    tags: list[str],
+    limit: int,
+    item_max_chars: int = DEFAULT_ITEM_MAX_CHARS,
+    max_extract_depth: int = MAX_EXTRACT_DEPTH,
+) -> str:
+    return await run_manual_recall_for_tag_sets(
+        client,
+        bank_id,
+        query,
+        [tags],
+        limit,
+        item_max_chars,
+        max_extract_depth,
+    )
 
 
 async def run_manual_recall_for_tag_sets(
@@ -98,12 +119,19 @@ async def run_manual_recall_for_tag_sets(
     query: str,
     tag_sets: list[list[str]],
     limit: int,
+    item_max_chars: int = DEFAULT_ITEM_MAX_CHARS,
+    max_extract_depth: int = MAX_EXTRACT_DEPTH,
 ) -> str:
     memories = []
     for tags in tag_sets:
         raw = await client.recall(bank_id=bank_id, query=query, tags=tags)
         memories.extend(extract_memories(raw))
-    formatted = format_recall_results(memories, limit=limit)
+    formatted = format_recall_results(
+        memories,
+        limit=limit,
+        item_max_chars=item_max_chars,
+        max_extract_depth=max_extract_depth,
+    )
     if not formatted:
         return "当前会话 scope 下没有召回到相关记忆。"
     return formatted

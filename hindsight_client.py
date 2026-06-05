@@ -58,7 +58,7 @@ class HindsightClient:
         }
         return await self._request_json(
             "POST",
-            f"/v1/default/banks/{bank_id}/memories/recall",
+            f"v1/default/banks/{bank_id}/memories/recall",
             retryable=True,
             json=payload,
         )
@@ -83,7 +83,7 @@ class HindsightClient:
         }
         return await self._request_json(
             "POST",
-            f"/v1/default/banks/{bank_id}/memories",
+            f"v1/default/banks/{bank_id}/memories",
             retryable=False,
             json=payload,
         )
@@ -92,7 +92,7 @@ class HindsightClient:
         try:
             await self._request_json(
                 "GET",
-                f"/v1/default/banks/{bank_id}/tags",
+                f"v1/default/banks/{bank_id}/tags",
                 retryable=True,
                 params={"limit": 1},
             )

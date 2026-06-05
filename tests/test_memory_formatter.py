@@ -59,6 +59,13 @@ class MemoryFormatterTests(unittest.TestCase):
 
         self.assertEqual(formatted, "")
 
+    def test_max_extract_depth_can_be_configured(self):
+        raw = {"results": [{"memory": {"memory": {"memory": {"memory": {"memory": {"text": "now visible"}}}}}}]}
+
+        formatted = format_recall_results(raw, 5, max_extract_depth=5)
+
+        self.assertIn("now visible", formatted)
+
     def test_empty_memory_branch_falls_back_to_observation_branch(self):
         raw = {
             "results": [
