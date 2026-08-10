@@ -94,6 +94,25 @@ main = importlib.import_module("astrbot_plugin_hindsight_memory.main")
 
 
 class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
+    def test_retain_metadata_serializes_confidence_as_string(self):
+        plugin = _plugin({})
+        decision = main.RetainDecision(
+            should_retain=True,
+            reason="ai_project",
+            sensitivity="low",
+            keep_user=True,
+            keep_assistant=False,
+            target_scope_types=("private",),
+            memory_type="project",
+            confidence=0.95,
+            source="ai",
+        )
+
+        metadata = plugin._retain_metadata({"scope": "private"}, decision, "new")
+
+        self.assertEqual(metadata["retention_confidence"], "0.95")
+        self.assertIsInstance(metadata["retention_confidence"], str)
+
     async def test_retention_uses_ai_decision_before_rule_fallback(self):
         plugin = _plugin({"memory_ai_enabled": True, "memory_ai_provider_id": "small"})
 

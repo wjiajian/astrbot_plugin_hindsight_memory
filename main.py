@@ -396,7 +396,7 @@ class HindsightMemoryPlugin(Star):
                 "retention_sensitivity": decision.sensitivity,
                 "retention_type": decision.memory_type,
                 "retention_source": decision.source,
-                "retention_confidence": decision.confidence,
+                "retention_confidence": str(decision.confidence),
                 "retention_action": retain_action,
             }
         )
