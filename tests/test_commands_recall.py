@@ -62,6 +62,19 @@ class CommandsRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("- 用户喜欢猫", lines)
         self.assertIn("- 群事实0", lines)
 
+    async def test_manual_recall_passes_guidance_to_formatter(self):
+        client = FakeHindsightClient()
+
+        with_guidance = await run_manual_recall_for_tag_sets(
+            client, bank_id="bank-1", query="q", tag_sets=[["scope:private"]], limit=5, guidance=True
+        )
+        without_guidance = await run_manual_recall_for_tag_sets(
+            client, bank_id="bank-1", query="q", tag_sets=[["scope:private"]], limit=5
+        )
+
+        self.assertIn("长期记忆", with_guidance)
+        self.assertNotIn("长期记忆", without_guidance)
+
     async def test_manual_recall_tolerates_partial_failures(self):
         client = FakeHindsightClient({("member", "q"): ["用户叫小王"]}, failing_tags={"shared"})
 

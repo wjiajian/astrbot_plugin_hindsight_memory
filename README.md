@@ -69,6 +69,7 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 - `memory_ai_fallback_to_current_provider`：所选 AI 记忆供应商调用失败时是否回退到当前会话供应商，默认开启。
 - `memory_ai_min_confidence`：AI 写入判定最低置信度，默认 `0.7`。低于该值会跳过写入。
 - `retain_ai_enabled` / `retain_ai_provider_id` / `retain_ai_fallback_to_current_provider` / `retain_ai_min_confidence`：兼容旧配置；新安装和新配置建议使用 `memory_ai_*`。
+- `context_turns`：写入判定和召回改写时参考的最近对话轮数，默认 `3`，设为 `0` 关闭。只用于理解“就用那个”“改成周五”这类指代，不会从上下文中重复提取旧记忆。
 - `retain_dedupe_enabled`：写入前先检索当前 scope，跳过高度相似的重复记忆，默认开启。
 - `retain_dedupe_threshold`：重复记忆相似度阈值，默认 `0.85`。
 - `retain_dedupe_limit`：写入前去重最多检查的历史记忆条数，默认 `5`。
@@ -85,13 +86,18 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 2. AI 必须返回结构化 JSON（`{"memories": [...]}`，同时兼容旧的单条格式）；插件解析失败或调用失败时，不影响聊天流程，会回退到本地精简规则。置信度低于 `memory_ai_min_confidence` 的单条记忆会被单独丢弃。
 3. 如果未启用 AI，本地规则只保留明确记忆意图、基础稳定事实、群规则/项目事实、个人偏好等几类，不再依赖大量手写锚点。
 4. 写入前仍会用 `memory_text` 在当前 scope recall，若相似度超过 `retain_dedupe_threshold` 则跳过；纠正类记忆会继续写入，并在 metadata 中标记为 `correction`。
-5. 每条写入都会附带 Hindsight 的 `context`（例如“私聊中关于用户的事实 (event)”）和消息发生时间 `timestamp`，帮助 Hindsight 抽取事实和按时间理解记忆。
+5. AI 判定时会附带最近 `context_turns` 轮对话（来自 AstrBot 当前请求的上下文），但只从当前这一轮提取记忆；群聊上下文中其他成员的发言不会被归到当前用户。工具调用的中间响应不会触发写入。
+6. 每条写入都会附带 Hindsight 的 `context`（例如“私聊中关于用户的事实 (event)”）和消息发生时间 `timestamp`，帮助 Hindsight 抽取事实和按时间理解记忆。
 
 AI 生成的 `memory_text` 会作为自然、独立、可检索的事实句写入，不再强制添加人工锚点前缀。默认不会额外调用 LLM；只有开启 `memory_ai_enabled` 后才会调用小模型。需要兼容旧行为时，可设置 `retain_decision_mode=all`。
 
 ## 召回拓展策略
 
-默认召回只使用用户原始 query。开启 `memory_ai_enabled` 后，每次自动召回和手动 `/hindsight recall` 都会先让 AI 将原始 query 改写成 1 到 4 条搜索 query，插件会并发检索，再用倒数排名融合（RRF）合并各条 query 和各个 scope 的结果并去重，最后按 `recall_limit` 注入。这样扩展 query 和群成员个人记忆不会被第一条 query 或群公共记忆的结果挤掉；部分请求失败时仍使用其余结果。AI 只负责拓展搜索词，不允许回答用户问题；如果 AI 调用失败或 JSON 解析失败，则直接回退为只使用原 query。
+默认召回只使用用户原始 query。开启 `memory_ai_enabled` 后，每次自动召回和手动 `/hindsight recall` 都会先让 AI 将原始 query 改写成 1 到 4 条搜索 query，插件会并发检索，再用倒数排名融合（RRF）合并各条 query 和各个 scope 的结果并去重，最后按 `recall_limit` 注入。这样扩展 query 和群成员个人记忆不会被第一条 query 或群公共记忆的结果挤掉；部分请求失败时仍使用其余结果。
+
+召回改写同样会参考最近 `context_turns` 轮对话来补全指代。未开启 `memory_ai_enabled` 时，如果当前消息很短（如“那个呢？”），会额外用“上一条用户消息 + 当前消息”检索一次。“谢谢”“好的”等闲聊和命令不会触发自动召回。
+
+自动注入的记忆块首行带有使用说明（按需参考、不逐条复述、以用户当前说法为准、无关则忽略），每条记忆前标注发生或记录日期，群公共记忆额外标注 `[群]`。手动 `/hindsight recall` 的输出不带使用说明。AI 只负责拓展搜索词，不允许回答用户问题；如果 AI 调用失败或 JSON 解析失败，则直接回退为只使用原 query。
 
 Hindsight 仍固定使用原有 recall API 和 `tags_match: all_strict`，本版不引入阈值配置。
 

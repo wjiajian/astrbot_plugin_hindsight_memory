@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
+import re
 from typing import Any
 
 
 DEFAULT_ITEM_MAX_CHARS = 360
 MAX_EXTRACT_DEPTH = 4
 RRF_K = 60
+GROUP_SHARED_TAG = "scope:group_shared"
+GUIDANCE_LINE = (
+    "以下是关于当前用户/群的长期记忆，按需自然参考，不要逐条复述；"
+    "与用户当前说法冲突时以当前说法为准；与当前话题无关则忽略。"
+)
 
 
 def format_recall_results(
@@ -13,6 +20,7 @@ def format_recall_results(
     limit: int,
     item_max_chars: int = DEFAULT_ITEM_MAX_CHARS,
     max_extract_depth: int = MAX_EXTRACT_DEPTH,
+    guidance: bool = False,
 ) -> str:
     memories = extract_memories(raw)
     if not memories:
@@ -23,11 +31,41 @@ def format_recall_results(
         text = _extract_text(memory, max_depth=max_extract_depth)
         if not text:
             continue
-        lines.append(f"- {_truncate(_normalize_text(text), item_max_chars)}")
+        lines.append(f"- {_memory_prefix(memory)}{_truncate(_normalize_text(text), item_max_chars)}")
 
     if not lines:
         return ""
+    if guidance:
+        lines.insert(0, GUIDANCE_LINE)
     return "<hindsight_memory>\n" + "\n".join(lines) + "\n</hindsight_memory>"
+
+
+def _memory_prefix(memory: Any) -> str:
+    if not isinstance(memory, dict):
+        return ""
+    labels: list[str] = []
+    date = _memory_date(memory.get("occurred_start")) or _memory_date(memory.get("mentioned_at"))
+    if date:
+        labels.append(date)
+    tags = memory.get("tags")
+    if isinstance(tags, list) and GROUP_SHARED_TAG in tags:
+        labels.append("群")
+    return "".join(f"[{label}] " for label in labels)
+
+
+def _memory_date(value: Any) -> str:
+    """Return the local YYYY-MM-DD of an ISO 8601 timestamp, or "" if unparseable."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    raw = value.strip()
+    try:
+        parsed = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw)
+    except ValueError:
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
+        return match.group(1) if match else ""
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.date().isoformat()
 
 
 def extract_memories(raw: Any) -> list[Any]:

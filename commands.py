@@ -130,6 +130,7 @@ async def run_manual_recall_for_tag_sets(
     max_extract_depth: int = MAX_EXTRACT_DEPTH,
     queries: Sequence[str] | None = None,
     empty_message: str = "当前会话 scope 下没有召回到相关记忆。",
+    guidance: bool = False,
 ) -> str:
     recall_queries = _recall_queries(query, queries)
     results = await asyncio.gather(
@@ -159,6 +160,7 @@ async def run_manual_recall_for_tag_sets(
         limit=limit,
         item_max_chars=item_max_chars,
         max_extract_depth=max_extract_depth,
+        guidance=guidance,
     )
     if not formatted:
         return empty_message

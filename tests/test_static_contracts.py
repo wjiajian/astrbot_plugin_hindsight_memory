@@ -61,8 +61,10 @@ class StaticContractTests(unittest.TestCase):
             "retain_dedupe_threshold",
             "retain_dedupe_limit",
             "retain_write_raw_conversation",
+            "context_turns",
         ):
             self.assertIn(key, config)
+        self.assertEqual(config["context_turns"]["default"], 3)
         self.assertEqual(config["recall_item_max_chars"]["default"], 360)
         self.assertEqual(config["memory_extract_max_depth"]["default"], 4)
         self.assertEqual(config["retain_decision_mode"]["default"], "balanced")

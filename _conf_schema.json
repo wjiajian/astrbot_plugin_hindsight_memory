@@ -48,6 +48,12 @@
     "type": "int",
     "default": 4
   },
+  "context_turns": {
+    "description": "写入判定和召回改写时参考的最近对话轮数",
+    "type": "int",
+    "default": 3,
+    "hint": "用于理解“就用那个”“改成周五”这类指代；只作为上下文，不会从中重复提取旧记忆。设为 0 关闭。"
+  },
   "retain_enabled": {
     "description": "启用回复后写入 Hindsight",
     "type": "bool",

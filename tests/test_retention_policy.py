@@ -5,6 +5,7 @@ from retention_policy import (
     build_ai_retention_prompt,
     dedupe_action,
     decide_retention,
+    is_trivial_message,
     precheck_ai_retention,
 )
 
@@ -285,6 +286,29 @@ class RetentionPolicyTests(unittest.TestCase):
         self.assertIn("2026-10-24T10:00+08:00", prompt)
         self.assertIn("event", prompt)
         self.assertLess(prompt.count("解释"), 1300)
+
+    def test_ai_prompt_includes_recent_context_and_current_turn_rule(self):
+        prompt = build_ai_retention_prompt(
+            "就用前者吧",
+            "好的",
+            "group_member",
+            "2026-10-24T10:00+08:00",
+            [{"role": "user", "text": "我在考虑用 Redis 还是 Kafka"}],
+        )
+
+        self.assertIn('"recent_context"', prompt)
+        self.assertIn("我在考虑用 Redis 还是 Kafka", prompt)
+        self.assertIn("Only extract from the CURRENT turn", prompt)
+        self.assertIn("never attribute their facts", prompt)
+        self.assertIn("account identifiers", prompt)
+
+    def test_is_trivial_message(self):
+        for text in ("", "  ", "谢谢", "好的呀", "哈哈哈", "/hindsight status", "ok"):
+            with self.subTest(text=text):
+                self.assertTrue(is_trivial_message(text))
+        for text in ("我喜欢什么饮料", "那前者呢？"):
+            with self.subTest(text=text):
+                self.assertFalse(is_trivial_message(text))
 
 
 def _first(decisions):

@@ -1,6 +1,6 @@
 import unittest
 
-from memory_formatter import format_recall_results, merge_ranked_memories
+from memory_formatter import GUIDANCE_LINE, format_recall_results, merge_ranked_memories
 
 
 class MemoryFormatterTests(unittest.TestCase):
@@ -99,6 +99,31 @@ class MemoryFormatterTests(unittest.TestCase):
 
         self.assertEqual(merged[0]["text"], "shared")
         self.assertEqual(len(merged), 3)
+
+    def test_prefixes_local_date_and_group_label(self):
+        raw = [
+            {"text": "用户计划考雅思。", "occurred_start": "2026-10-30T00:00:00", "mentioned_at": "2026-10-24T02:00:00"},
+            {"text": "本群提问先贴日志。", "mentioned_at": "2026-10-20T12:00:00", "tags": ["scope:group_shared"]},
+            {"text": "坏日期。", "mentioned_at": "not-a-date"},
+            {"text": "UTC 日期。", "mentioned_at": "2026-10-24T02:00:00Z"},
+        ]
+
+        lines = format_recall_results(raw, 5).splitlines()[1:-1]
+
+        self.assertEqual(lines[0], "- [2026-10-30] 用户计划考雅思。")
+        self.assertEqual(lines[1], "- [2026-10-20] [群] 本群提问先贴日志。")
+        self.assertEqual(lines[2], "- 坏日期。")
+        self.assertRegex(lines[3], r"^- \[2026-10-2[345]\] UTC 日期。$")
+
+    def test_guidance_line_only_when_requested(self):
+        raw = [{"text": "用户喜欢猫。"}]
+
+        with_guidance = format_recall_results(raw, 5, guidance=True).splitlines()
+        without_guidance = format_recall_results(raw, 5).splitlines()
+
+        self.assertEqual(with_guidance[1], GUIDANCE_LINE)
+        self.assertEqual(with_guidance[2], "- 用户喜欢猫。")
+        self.assertEqual(without_guidance[1], "- 用户喜欢猫。")
 
 
 if __name__ == "__main__":

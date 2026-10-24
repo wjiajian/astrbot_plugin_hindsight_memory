@@ -111,18 +111,26 @@ def build_ai_retention_prompt(
     assistant_text: str,
     primary_scope_type: str,
     current_time: str = "",
+    recent_context: list[dict[str, str]] | None = None,
 ) -> str:
     allowed_scopes = ["private"] if primary_scope_type not in GROUP_SCOPE_TYPES else ["group_member", "group_shared"]
     payload = {
         "primary_scope_type": primary_scope_type,
         "allowed_scopes": allowed_scopes,
         "current_time": current_time,
+        "recent_context": list(recent_context or []),
         "user_text": _clean_text(user_text),
         "assistant_text": _truncate(_clean_text(assistant_text), AI_PROMPT_ASSISTANT_MAX_CHARS),
     }
     return (
         "You extract long-term memories about the USER (or the group) from one chat turn.\n"
         "A memory is worth keeping only if it would still help a future conversation days or weeks later.\n"
+        "\n"
+        "Only extract from the CURRENT turn (user_text). recent_context holds earlier messages and is only for "
+        "resolving references such as 'that one' or 'move it to Friday'. Never re-extract facts that were "
+        "already stated in recent_context; they were handled in earlier turns.\n"
+        "In group chats recent_context may contain other members' messages; never attribute their facts to "
+        "the current user.\n"
         "\n"
         "KEEP (only when stated or clearly confirmed by the user):\n"
         "- profile: name, nickname, how to address them, identity, job, location, relationships, pets.\n"
@@ -139,6 +147,7 @@ def build_ai_retention_prompt(
         "- Greetings, thanks, jokes, momentary moods, roleplay content, commands, tool output, errors or refusals.\n"
         "- Anything you have to guess. If the turn is ambiguous without earlier context, keep nothing.\n"
         "- API keys, tokens, passwords, private keys, or other secrets.\n"
+        "- Platform user IDs, QQ numbers, group IDs, or other account identifiers.\n"
         "\n"
         "Writing rules for each memory text:\n"
         "- One atomic fact per memory; split unrelated facts into separate memories.\n"
@@ -156,6 +165,8 @@ def build_ai_retention_prompt(
         "- user: 'Python 的 GIL 是什么' -> keep nothing (a question; the explanation is general knowledge).\n"
         "- user: '以后回答简短点，别用 emoji' -> keep preference '用户希望回答简短且不使用 emoji'.\n"
         "- user: '哈哈谢谢' -> keep nothing.\n"
+        "- recent_context: user '我在考虑用 Redis 还是 Kafka 做消息队列'; user_text: '就用前者吧' -> keep project "
+        "'用户决定在项目中使用 Redis 作为消息队列'.\n"
         "\n"
         "Return one JSON object only, no markdown. Return {\"memories\": []} when nothing is worth keeping.\n"
         "Schema: {\n"
@@ -172,6 +183,12 @@ def build_ai_retention_prompt(
         "}\n"
         f"Input JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
+
+
+def is_trivial_message(text: str) -> bool:
+    """True for commands and pure chitchat that never need memory recall or retention."""
+    cleaned = _clean_text(text)
+    return not cleaned or _is_command(cleaned) or _is_chitchat(cleaned)
 
 
 def precheck_ai_retention(

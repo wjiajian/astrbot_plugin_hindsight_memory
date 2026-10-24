@@ -12,6 +12,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 
 from .commands import PluginStateStore, build_help_text, run_manual_recall_for_tag_sets
+from .conversation_context import DEFAULT_CONTEXT_TURNS, recent_turns, short_query_with_context
 from .hindsight_client import HindsightClient, HindsightClientError
 from .memory_ai import (
     build_recall_query_prompt,
@@ -27,6 +28,7 @@ from .retention_policy import (
     build_ai_retention_prompt,
     decide_retention,
     dedupe_action,
+    is_trivial_message,
     precheck_ai_retention,
     should_write_raw_conversation,
 )
@@ -34,6 +36,7 @@ from .scope import MemoryScope, MemoryScopes, MissingScopeIdentityError, build_s
 
 
 PLUGIN_NAME = "astrbot_plugin_hindsight_memory"
+RECENT_CONTEXT_EXTRA_KEY = "hindsight_recent_context"
 T = TypeVar("T")
 
 
@@ -72,12 +75,15 @@ class HindsightMemoryPlugin(Star):
         if not self._config_complete():
             return
 
+        recent = recent_turns(getattr(req, "contexts", None), self._context_turns())
+        _set_event_extra(event, RECENT_CONTEXT_EXTRA_KEY, recent)
+
         query = _event_text(event)
-        if not query:
+        if not query or is_trivial_message(query):
             return
 
         try:
-            queries = await self._recall_queries(event, query)
+            queries = await self._recall_queries(event, query, recent)
             formatted = await run_manual_recall_for_tag_sets(
                 await self._client(),
                 bank_id=self._bank_id(),
@@ -88,6 +94,7 @@ class HindsightMemoryPlugin(Star):
                 max_extract_depth=self._memory_extract_max_depth(),
                 queries=queries,
                 empty_message="",
+                guidance=True,
             )
         except HindsightClientError as exc:
             _log_warning(f"Hindsight recall failed: {exc}")
@@ -115,9 +122,18 @@ class HindsightMemoryPlugin(Star):
 
         user_text = _event_text(event)
         assistant_text = _response_text(resp)
+        if not assistant_text and getattr(resp, "tools_call_name", None):
+            _log_debug("Hindsight retain skipped: tool call step")
+            return
         event_time = _event_datetime(event)
+        recent = _get_event_extra(event, RECENT_CONTEXT_EXTRA_KEY)
         decisions = await self._retention_decisions(
-            event, user_text, assistant_text, scopes.primary.scope_type, event_time
+            event,
+            user_text,
+            assistant_text,
+            scopes.primary.scope_type,
+            event_time,
+            recent if isinstance(recent, list) else [],
         )
         retained = [decision for decision in decisions if decision.should_retain]
         if not retained:
@@ -311,6 +327,12 @@ class HindsightMemoryPlugin(Star):
         except (TypeError, ValueError):
             return 4
 
+    def _context_turns(self) -> int:
+        try:
+            return max(0, int(self.config.get("context_turns", DEFAULT_CONTEXT_TURNS)))
+        except (TypeError, ValueError):
+            return DEFAULT_CONTEXT_TURNS
+
     def _request_timeout_seconds(self) -> int:
         try:
             return max(1, int(self.config.get("request_timeout_seconds") or 8))
@@ -329,6 +351,7 @@ class HindsightMemoryPlugin(Star):
         assistant_text: str,
         primary_scope_type: str,
         event_time: datetime | None = None,
+        recent_context: list[dict[str, str]] | None = None,
     ) -> list[RetainDecision]:
         if memory_ai_enabled(self.config):
             base_decision = precheck_ai_retention(user_text, assistant_text, primary_scope_type, self.config)
@@ -336,7 +359,9 @@ class HindsightMemoryPlugin(Star):
                 return [base_decision]
 
             current_time = (event_time or _event_datetime(event)).isoformat(timespec="minutes")
-            prompt = build_ai_retention_prompt(user_text, assistant_text, primary_scope_type, current_time)
+            prompt = build_ai_retention_prompt(
+                user_text, assistant_text, primary_scope_type, current_time, recent_context
+            )
             try:
                 response_text = await _call_memory_ai(self._context, event, prompt, self.config, "retention")
             except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -349,10 +374,17 @@ class HindsightMemoryPlugin(Star):
 
         return [decide_retention(user_text, assistant_text, primary_scope_type, self.config)]
 
-    async def _recall_queries(self, event: AstrMessageEvent, query: str) -> list[str]:
+    async def _recall_queries(
+        self,
+        event: AstrMessageEvent,
+        query: str,
+        recent_context: list[dict[str, str]] | None = None,
+    ) -> list[str]:
+        recent = list(recent_context or [])
         if not memory_ai_enabled(self.config):
-            return [query]
-        prompt = build_recall_query_prompt(query)
+            contextual_query = short_query_with_context(query, recent)
+            return [query, contextual_query] if contextual_query else [query]
+        prompt = build_recall_query_prompt(query, recent)
         try:
             response_text = await _call_memory_ai(self._context, event, prompt, self.config, "recall")
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -439,6 +471,22 @@ def _response_text(resp: LLMResponse | TextResponseLike | str | bytes | None) ->
     if isinstance(resp, str):
         return resp.strip()
     return str(getattr(resp, "completion_text", "") or "").strip()
+
+
+def _set_event_extra(event: AstrMessageEvent, key: str, value: object) -> None:
+    set_extra = getattr(event, "set_extra", None)
+    if callable(set_extra):
+        set_extra(key, value)
+
+
+def _get_event_extra(event: AstrMessageEvent, key: str) -> object:
+    get_extra = getattr(event, "get_extra", None)
+    if not callable(get_extra):
+        return None
+    try:
+        return get_extra(key, None)
+    except TypeError:
+        return get_extra(key)
 
 
 def _event_datetime(event: AstrMessageEvent) -> datetime:
