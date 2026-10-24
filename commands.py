@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 import json
 import secrets
 import uuid
-from typing import Any, TYPE_CHECKING, Sequence
+from typing import Any, Sequence
 
 from astrbot.api import logger
 
-from .memory_formatter import DEFAULT_ITEM_MAX_CHARS, MAX_EXTRACT_DEPTH, dedupe_memories, extract_memories, format_recall_results
-
-if TYPE_CHECKING:
-    from .hindsight_client import HindsightClient
+from .hindsight_client import HindsightClient, HindsightClientError
+from .memory_formatter import (
+    DEFAULT_ITEM_MAX_CHARS,
+    MAX_EXTRACT_DEPTH,
+    extract_memories,
+    format_recall_results,
+    merge_ranked_memories,
+)
 
 
 SALT_FILE = "salt.txt"
@@ -126,13 +131,29 @@ async def run_manual_recall_for_tag_sets(
     queries: Sequence[str] | None = None,
     empty_message: str = "当前会话 scope 下没有召回到相关记忆。",
 ) -> str:
-    memories: list[Any] = []
     recall_queries = _recall_queries(query, queries)
-    for tags in tag_sets:
-        for recall_query in recall_queries:
-            raw = await client.recall(bank_id=bank_id, query=recall_query, tags=tags)
-            memories.extend(extract_memories(raw))
-    memories = dedupe_memories(memories, max_extract_depth=max_extract_depth)
+    results = await asyncio.gather(
+        *(
+            client.recall(bank_id=bank_id, query=recall_query, tags=tags)
+            for tags in tag_sets
+            for recall_query in recall_queries
+        ),
+        return_exceptions=True,
+    )
+    ranked_lists: list[list[Any]] = []
+    failures: list[HindsightClientError] = []
+    for result in results:
+        if isinstance(result, HindsightClientError):
+            failures.append(result)
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            ranked_lists.append(extract_memories(result))
+    if failures and not ranked_lists:
+        raise failures[0]
+    if failures and logger is not None:
+        logger.warning(f"Hindsight recall partially failed ({len(failures)}/{len(results)}): {failures[0]}")
+    memories = merge_ranked_memories(ranked_lists, max_extract_depth=max_extract_depth)
     formatted = format_recall_results(
         memories,
         limit=limit,

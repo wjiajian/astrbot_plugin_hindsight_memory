@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, Awaitable, Iterable
+from datetime import datetime, timezone
 import inspect
 from typing import Any, Protocol, TypeVar
 
@@ -22,7 +23,7 @@ from .memory_ai import (
 from .memory_formatter import extract_memories, extract_memory_texts, format_recall_results
 from .retention_policy import (
     RetainDecision,
-    apply_ai_retention_result,
+    apply_ai_retention_results,
     build_ai_retention_prompt,
     decide_retention,
     dedupe_action,
@@ -114,30 +115,41 @@ class HindsightMemoryPlugin(Star):
 
         user_text = _event_text(event)
         assistant_text = _response_text(resp)
-        decision = await self._retention_decision(event, user_text, assistant_text, scopes.primary.scope_type)
-        if not decision.should_retain:
-            _log_debug(f"Hindsight retain skipped: {decision.reason}")
+        event_time = _event_datetime(event)
+        decisions = await self._retention_decisions(
+            event, user_text, assistant_text, scopes.primary.scope_type, event_time
+        )
+        retained = [decision for decision in decisions if decision.should_retain]
+        if not retained:
+            _log_debug(f"Hindsight retain skipped: {', '.join(decision.reason for decision in decisions)}")
             return
 
-        content = self._retain_content(user_text, assistant_text, decision)
-        if not content:
-            return
-
+        timestamp = _iso_utc(event_time)
+        written: set[tuple[str, str]] = set()
         try:
             client = await self._client()
-            for retain_scope in scopes.retain_scopes:
-                if retain_scope.scope_type not in decision.target_scope_types:
+            for decision in retained:
+                content = self._retain_content(user_text, assistant_text, decision)
+                if not content:
                     continue
-                retain_action = await self._retain_dedupe_action(client, content, retain_scope, decision)
-                if retain_action == "duplicate":
-                    _log_debug(f"Hindsight retain skipped duplicate: {retain_scope.scope_type}")
-                    continue
-                await client.retain(
-                    bank_id=self._bank_id(),
-                    content=content,
-                    tags=retain_scope.tags,
-                    metadata=self._retain_metadata(retain_scope.metadata, decision, retain_action),
-                )
+                for retain_scope in scopes.retain_scopes:
+                    if retain_scope.scope_type not in decision.target_scope_types:
+                        continue
+                    if (retain_scope.scope_type, content) in written:
+                        continue
+                    written.add((retain_scope.scope_type, content))
+                    retain_action = await self._retain_dedupe_action(client, content, retain_scope, decision)
+                    if retain_action == "duplicate":
+                        _log_debug(f"Hindsight retain skipped duplicate: {retain_scope.scope_type}")
+                        continue
+                    await client.retain(
+                        bank_id=self._bank_id(),
+                        content=content,
+                        tags=retain_scope.tags,
+                        metadata=self._retain_metadata(retain_scope.metadata, decision, retain_action),
+                        context=_retain_context(retain_scope.scope_type, decision, content),
+                        timestamp=timestamp,
+                    )
         except HindsightClientError as exc:
             _log_warning(f"Hindsight retain failed: {exc}")
 
@@ -310,30 +322,32 @@ class HindsightMemoryPlugin(Star):
             return _bool_config(self.config, "enable_group_memory", True)
         return _bool_config(self.config, "enable_private_memory", True)
 
-    async def _retention_decision(
+    async def _retention_decisions(
         self,
         event: AstrMessageEvent,
         user_text: str,
         assistant_text: str,
         primary_scope_type: str,
-    ) -> RetainDecision:
+        event_time: datetime | None = None,
+    ) -> list[RetainDecision]:
         if memory_ai_enabled(self.config):
             base_decision = precheck_ai_retention(user_text, assistant_text, primary_scope_type, self.config)
             if not base_decision.should_retain:
-                return base_decision
+                return [base_decision]
 
-            prompt = build_ai_retention_prompt(user_text, assistant_text, primary_scope_type)
+            current_time = (event_time or _event_datetime(event)).isoformat(timespec="minutes")
+            prompt = build_ai_retention_prompt(user_text, assistant_text, primary_scope_type, current_time)
             try:
                 response_text = await _call_memory_ai(self._context, event, prompt, self.config, "retention")
             except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
                 _log_warning(f"Hindsight AI retention fallback to rules: {exc}")
             else:
-                ai_decision = apply_ai_retention_result(base_decision, response_text, primary_scope_type, self.config)
-                if ai_decision is not None:
-                    return ai_decision
+                ai_decisions = apply_ai_retention_results(base_decision, response_text, primary_scope_type, self.config)
+                if ai_decisions is not None:
+                    return ai_decisions
                 _log_warning("Hindsight AI retention returned invalid JSON; fallback to rules.")
 
-        return decide_retention(user_text, assistant_text, primary_scope_type, self.config)
+        return [decide_retention(user_text, assistant_text, primary_scope_type, self.config)]
 
     async def _recall_queries(self, event: AstrMessageEvent, query: str) -> list[str]:
         if not memory_ai_enabled(self.config):
@@ -425,6 +439,34 @@ def _response_text(resp: LLMResponse | TextResponseLike | str | bytes | None) ->
     if isinstance(resp, str):
         return resp.strip()
     return str(getattr(resp, "completion_text", "") or "").strip()
+
+
+def _event_datetime(event: AstrMessageEvent) -> datetime:
+    """Local-timezone time of the message, falling back to now."""
+    raw = getattr(getattr(event, "message_obj", None), "timestamp", None)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        try:
+            return datetime.fromtimestamp(raw, timezone.utc).astimezone()
+        except (OverflowError, OSError, ValueError):
+            pass
+    return datetime.now(timezone.utc).astimezone()
+
+
+def _iso_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _retain_context(scope_type: str, decision: RetainDecision, content: str) -> str:
+    """Short label that Hindsight injects into its fact extraction prompt."""
+    if scope_type == "group_shared":
+        subject = "shared fact about a group chat"
+    elif scope_type == "group_member":
+        subject = "fact about one member of a group chat"
+    else:
+        subject = "fact about the user in a private chat"
+    if content == decision.memory_text and decision.memory_type != "conversation":
+        return f"Chatbot long-term memory: {subject} ({decision.memory_type})"
+    return f"Chatbot conversation turn: {subject}"
 
 
 def _event_looks_like_group(event: AstrMessageEvent) -> bool:

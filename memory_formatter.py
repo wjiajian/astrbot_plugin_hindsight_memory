@@ -5,6 +5,7 @@ from typing import Any
 
 DEFAULT_ITEM_MAX_CHARS = 360
 MAX_EXTRACT_DEPTH = 4
+RRF_K = 60
 
 
 def format_recall_results(
@@ -56,17 +57,34 @@ def extract_memory_texts(raw: Any, limit: int = 0, max_extract_depth: int = MAX_
     return texts
 
 
-def dedupe_memories(memories: list[Any], max_extract_depth: int = MAX_EXTRACT_DEPTH) -> list[Any]:
-    seen: set[str] = set()
-    deduped: list[Any] = []
-    for memory in memories:
-        text = _extract_text(memory, max_depth=max_extract_depth)
-        key = _normalize_text(text).lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(memory)
-    return deduped
+def merge_ranked_memories(
+    ranked_lists: list[list[Any]],
+    max_extract_depth: int = MAX_EXTRACT_DEPTH,
+    rrf_k: int = RRF_K,
+) -> list[Any]:
+    """Merge several ranked recall result lists with reciprocal rank fusion.
+
+    Each list comes from one (scope, query) recall. Concatenating them would let
+    the first list fill the whole injection budget; RRF instead favors memories
+    ranked high in any list and memories returned by several queries.
+    """
+    scores: dict[str, float] = {}
+    first_seen: dict[str, tuple[int, Any]] = {}
+    order = 0
+    for memories in ranked_lists:
+        seen_in_list: set[str] = set()
+        for rank, memory in enumerate(memories):
+            text = _extract_text(memory, max_depth=max_extract_depth)
+            key = _normalize_text(text).lower()
+            if not key or key in seen_in_list:
+                continue
+            seen_in_list.add(key)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            if key not in first_seen:
+                first_seen[key] = (order, memory)
+                order += 1
+    ranked_keys = sorted(scores, key=lambda key: (-scores[key], first_seen[key][0]))
+    return [first_seen[key][1] for key in ranked_keys]
 
 
 def _extract_text(

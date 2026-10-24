@@ -70,6 +70,30 @@ class HindsightClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(seen["body"]["async"], True)
         self.assertEqual(seen["body"]["items"][0]["tags"], ["scope:group"])
         self.assertNotIn("document_tags", seen["body"])
+        self.assertNotIn("context", seen["body"]["items"][0])
+        self.assertNotIn("timestamp", seen["body"]["items"][0])
+
+    async def test_retain_item_includes_context_and_timestamp(self):
+        seen = {}
+
+        async def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"success": True})
+
+        client = _client_with_transport(handler)
+        self.addAsyncCleanup(client.aclose)
+
+        await client.retain(
+            "bank",
+            "用户喜欢简洁回答。",
+            ["scope:private"],
+            context="Chatbot long-term memory: fact about the user in a private chat (preference)",
+            timestamp="2026-10-24T02:00:00Z",
+        )
+
+        item = seen["body"]["items"][0]
+        self.assertEqual(item["context"], "Chatbot long-term memory: fact about the user in a private chat (preference)")
+        self.assertEqual(item["timestamp"], "2026-10-24T02:00:00Z")
 
     async def test_status_maps_auth_and_permission_errors(self):
         async def handler(request):

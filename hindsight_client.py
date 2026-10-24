@@ -69,11 +69,17 @@ class HindsightClient:
         content: str,
         tags: list[str],
         metadata: dict[str, Any] | None = None,
+        context: str | None = None,
+        timestamp: str | None = None,
     ) -> dict[str, Any]:
         item: dict[str, Any] = {
             "content": content,
             "tags": tags,
         }
+        if context:
+            item["context"] = context
+        if timestamp:
+            item["timestamp"] = timestamp
         if metadata:
             item["metadata"] = metadata
 

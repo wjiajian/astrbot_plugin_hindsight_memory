@@ -1,6 +1,6 @@
 import unittest
 
-from memory_formatter import format_recall_results
+from memory_formatter import format_recall_results, merge_ranked_memories
 
 
 class MemoryFormatterTests(unittest.TestCase):
@@ -79,6 +79,26 @@ class MemoryFormatterTests(unittest.TestCase):
         formatted = format_recall_results(raw, 5)
 
         self.assertIn("Observation text should survive.", formatted)
+
+    def test_merge_ranked_memories_interleaves_lists_instead_of_concatenating(self):
+        first = [{"text": f"A{i}"} for i in range(6)]
+        second = [{"text": "B0"}, {"text": "B1"}]
+
+        merged = merge_ranked_memories([first, second])
+
+        self.assertEqual([item["text"] for item in merged[:4]], ["A0", "B0", "A1", "B1"])
+        self.assertEqual(len(merged), 8)
+
+    def test_merge_ranked_memories_boosts_memories_found_by_several_lists(self):
+        merged = merge_ranked_memories(
+            [
+                [{"text": "only first"}, {"text": "shared"}],
+                [{"text": "only second"}, {"text": " Shared "}],
+            ]
+        )
+
+        self.assertEqual(merged[0]["text"], "shared")
+        self.assertEqual(len(merged), 3)
 
 
 if __name__ == "__main__":

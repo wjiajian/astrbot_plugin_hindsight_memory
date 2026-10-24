@@ -127,7 +127,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
         ) as call_ai:
-            decision = await plugin._retention_decision(_event(), "下午聊了订单同步模块", "好的", "private")
+            (decision,) = await plugin._retention_decisions(_event(), "下午聊了订单同步模块", "好的", "private")
 
         call_ai.assert_awaited_once()
         self.assertTrue(decision.should_retain)
@@ -138,7 +138,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
         plugin = _plugin({"memory_ai_enabled": True, "memory_ai_provider_id": "small"})
 
         with patch.object(main, "_call_memory_ai", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            decision = await plugin._retention_decision(_event(), "记住我喜欢简洁回答", "好的", "private")
+            (decision,) = await plugin._retention_decisions(_event(), "记住我喜欢简洁回答", "好的", "private")
 
         self.assertTrue(decision.should_retain)
         self.assertEqual(decision.source, "rules")
@@ -148,7 +148,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
         plugin = _plugin({"memory_ai_enabled": False})
 
         with patch.object(main, "_call_memory_ai", new=AsyncMock()) as call_ai:
-            decision = await plugin._retention_decision(_event(), "记住我喜欢简洁回答", "好的", "private")
+            (decision,) = await plugin._retention_decisions(_event(), "记住我喜欢简洁回答", "好的", "private")
 
         call_ai.assert_not_called()
         self.assertTrue(decision.should_retain)
@@ -166,6 +166,56 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "_call_memory_ai", new=AsyncMock(side_effect=RuntimeError("boom"))):
             self.assertEqual(await plugin._recall_queries(_event(), "我喜欢什么饮料"), ["我喜欢什么饮料"])
+
+    async def test_on_llm_response_writes_each_ai_memory_with_context_and_timestamp(self):
+        plugin = _plugin(
+            {
+                "api_key": "k",
+                "bank_id": "bank",
+                "memory_ai_enabled": True,
+                "memory_ai_provider_id": "small",
+                "retain_dedupe_enabled": False,
+            }
+        )
+        plugin.store = SimpleNamespace(is_scope_enabled=lambda key: True)
+        plugin.salt = "salt"
+        client = SimpleNamespace(retain=AsyncMock(return_value={}))
+        plugin._client = AsyncMock(return_value=client)
+        event = SimpleNamespace(
+            unified_msg_origin="umo",
+            message_str="我下周五要考雅思，最近在刷听力",
+            sender_id="u1",
+            platform_id="qq",
+            message_obj=SimpleNamespace(timestamp=1792807200),
+        )
+
+        with patch.object(
+            main,
+            "_call_memory_ai",
+            new=AsyncMock(
+                return_value=(
+                    '{"memories": ['
+                    '{"text": "用户计划在2026-10-30参加雅思考试。", "memory_type": "event", "confidence": 0.9},'
+                    '{"text": "用户最近在练习雅思听力。", "memory_type": "event", "confidence": 0.9}'
+                    ']}'
+                )
+            ),
+        ):
+            await plugin.on_llm_response(event, SimpleNamespace(completion_text="加油！"))
+
+        calls = client.retain.await_args_list
+        self.assertEqual(
+            [call.kwargs["content"] for call in calls],
+            ["用户计划在2026-10-30参加雅思考试。", "用户最近在练习雅思听力。"],
+        )
+        self.assertEqual(calls[0].kwargs["timestamp"], "2026-10-24T02:00:00Z")
+        self.assertIn("private chat", calls[0].kwargs["context"])
+        self.assertIn("(event)", calls[0].kwargs["context"])
+
+    def test_event_datetime_falls_back_to_now_without_message_timestamp(self):
+        value = main._event_datetime(SimpleNamespace())
+
+        self.assertIsNotNone(value.tzinfo)
 
 
 def _plugin(config):
