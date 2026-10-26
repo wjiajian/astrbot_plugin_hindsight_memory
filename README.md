@@ -31,14 +31,11 @@ Hindsight 是一个面向 AI 应用的长期记忆服务，可以把对话中的
 1. 在 Hindsight Cloud 创建一个 Memory Bank。
 2. 为该 Bank 创建 Bank-scoped API Key。
 3. 将本仓库安装到 AstrBot 插件目录。
-4. 在 AstrBot 插件配置中填写：
-   - `api_key`：Hindsight Cloud API Key
-   - `bank_id`：Hindsight Memory Bank ID
-   - `api_base`：保持默认值 `https://api.hindsight.vectorize.io`
-   - `recall_item_max_chars`：每条召回记忆注入前的最大字符数，默认 `360`
-   - `memory_extract_max_depth`：解析召回结果嵌套结构的最大深度，默认 `4`
-   - `memory_ai_enabled`：是否启用 AI 记忆分析和召回拓展，默认关闭
-   - `memory_ai_provider_id`：建议选择便宜、快速的小模型 Provider；留空时使用当前会话 Provider
+4. 在 AstrBot WebUI 的插件配置中填写两个必填项：
+   - “Hindsight API Key（必填）”（`api_key`）：第 2 步创建的 Key
+   - “Memory Bank ID（必填）”（`bank_id`）：第 1 步创建的 Memory Bank 的 ID
+
+   其余配置保持默认即可使用。如果想让记忆更精准，可以开启“用 AI 整理和查找记忆”（`memory_ai_enabled`），并在“整理记忆使用的模型”（`memory_ai_provider_id`）中选一个便宜、快速的小模型。
 5. 保存配置后，重载插件或重启 AstrBot。
 
 插件依赖只包含 `httpx`，AstrBot 通常会根据 `requirements.txt` 自动安装。
@@ -51,33 +48,62 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 
 ## 配置项说明
 
-- `enabled`：全局启用或关闭插件。
-- `api_base`：Hindsight Cloud API Base URL，默认 `https://api.hindsight.vectorize.io`。
-- `api_key`：Hindsight Cloud API Key。
-- `bank_id`：Hindsight Memory Bank ID。
-- `enable_private_memory`：启用私聊记忆。
-- `enable_group_memory`：启用群聊记忆。
-- `recall_limit`：每轮最多注入的记忆条数。
-- `recall_item_max_chars`：每条召回记忆注入前的最大字符数，默认 `360`。
-- `memory_extract_max_depth`：解析召回结果嵌套结构的最大深度，默认 `4`。
-- `retain_enabled`：启用 LLM 回复后写入 Hindsight。
-- `retain_decision_mode`：写入判定模式，默认 `balanced`。`all` 保持旧行为，`balanced` 只自动写入较稳定的记忆，`strict` 只写入明确要求记住的内容。
-- `retain_min_chars`：自动写入判定的最小有效字符数，默认 `8`。
-- `retain_sensitive_requires_explicit`：邮箱、手机号、身份证等敏感信息必须明确要求记住才允许写入，默认开启；API Key、密码、token、private key 永不自动写入。
-- `memory_ai_enabled`：启用 AI 记忆分析和召回拓展，默认关闭。开启后写入判定和召回 query 拓展都会额外调用 AstrBot LLM Provider。
-- `memory_ai_provider_id`：AI 记忆分析使用的 AstrBot LLM 供应商。建议单独配置便宜、快速的小模型；留空时使用当前会话供应商。
-- `memory_ai_fallback_to_current_provider`：所选 AI 记忆供应商调用失败时是否回退到当前会话供应商，默认开启。
-- `memory_ai_min_confidence`：AI 写入判定最低置信度，默认 `0.7`。低于该值会跳过写入。
-- `retain_ai_enabled` / `retain_ai_provider_id` / `retain_ai_fallback_to_current_provider` / `retain_ai_min_confidence`：兼容旧配置；新安装和新配置建议使用 `memory_ai_*`。
-- `context_turns`：写入判定和召回改写时参考的最近对话轮数，默认 `3`，设为 `0` 关闭。只用于理解“就用那个”“改成周五”这类指代，不会从上下文中重复提取旧记忆。
-- `retain_dedupe_enabled`：写入前先检索当前 scope，跳过高度相似的重复记忆，默认开启。
-- `retain_dedupe_threshold`：重复记忆相似度阈值，默认 `0.85`。
-- `retain_dedupe_limit`：写入前去重最多检查的历史记忆条数，默认 `5`。
-- `retain_write_raw_conversation`：写入原始本轮对话而不是精炼后的记忆文本，默认关闭；`retain_decision_mode=all` 始终保持原始对话写入。
-- `retain_user_message`：写入用户本轮消息。
-- `retain_assistant_message`：写入助手本轮回复。
-- `request_timeout_seconds`：Hindsight 请求超时时间，单位秒。
+下表中的“页面名称”是 AstrBot WebUI 插件配置页中显示的名称，括号内是对应的配置 key。
 
+### 连接
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 启用长期记忆（`enabled`） | 开启 | 总开关。关闭后插件不再读取或写入任何记忆，已保存的记忆不受影响。 |
+| Hindsight 服务地址（`api_base`） | `https://api.hindsight.vectorize.io` | 保持默认即可。目前只支持 Hindsight Cloud，不支持自行部署的 Hindsight。 |
+| Hindsight API Key（必填）（`api_key`） | 空 | 在 Hindsight Cloud 后台创建。建议创建只能访问对应 Memory Bank 的 Key（Bank-scoped），更安全。 |
+| Memory Bank ID（必填）（`bank_id`） | 空 | Memory Bank 是存放记忆的“仓库”。先在 Hindsight Cloud 后台创建一个，再把它的 ID 填到这里。 |
+| 连接 Hindsight 的超时时间（秒）（`request_timeout_seconds`） | `8` | 超过这个时间没有响应就放弃本次读写，机器人照常回复。网络较慢时可适当调大。 |
+
+### 记忆范围
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 私聊中使用记忆（`enable_private_memory`） | 开启 | 机器人会记住私聊对象的信息，并在之后的私聊中想起来。每个用户的记忆相互隔离。 |
+| 群聊中使用记忆（`enable_group_memory`） | 开启 | 机器人会记住群规则、群项目等群内公共信息，以及群成员在该群里的个人信息。不同群的记忆相互隔离。 |
+
+### 召回
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 每次回复最多参考几条记忆（`recall_limit`） | `5` | 回复前会从记忆库中找出相关的几条，附加给 AI 作参考。条数越多参考越全，但会消耗更多 token。 |
+| 每条记忆最多附加多少字（`recall_item_max_chars`） | `360` | 过长的记忆会被截断后再交给 AI，用来控制 token 消耗。一般无需修改。 |
+| 参考最近几轮对话来理解指代（`context_turns`） | `3` | 用户说“就用那个”“改成周五”时，插件会结合最近几轮对话判断“那个”“周五”指什么，再决定记什么、查什么。这些旧对话只用来理解当前这句话，不会被再次写入。填 `0` 关闭。 |
+| 记忆结果解析深度（高级）（`memory_extract_max_depth`） | `4` | 解析 Hindsight 返回数据时最多向下查找几层。一般无需修改。 |
+
+### 写入
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 自动保存新记忆（`retain_enabled`） | 开启 | 机器人每次回复后会判断这轮对话里有没有值得长期记住的内容，有就保存。关闭后只读取已有记忆，不再新增。 |
+| 自动保存的严格程度（`retain_decision_mode`） | 均衡（`balanced`） | 均衡：只保存偏好、身份、约定这类长期有用的信息，忽略闲聊。严格（`strict`）：只有用户明确说“记住……”时才保存。全部保存（`all`）：每轮对话原样保存，记忆库增长快、噪音多，仅用于兼容旧版本。 |
+| 过短的消息不保存（字数）（`retain_min_chars`） | `8` | 用户消息的有效字数少于此值时，视为信息量不足，不会自动保存。用户明确说“记住”时不受此限制。 |
+| 隐私信息需用户明确要求才保存（`retain_sensitive_requires_explicit`） | 开启 | 包含手机号、邮箱、身份证号等隐私信息的消息，只有用户明确说“记住”才会保存。密码、API Key、Token、私钥等密钥无论如何都不会保存。 |
+| 保存对话原文而不是整理后的要点（`retain_write_raw_conversation`） | 关闭 | 默认只保存整理后的简洁事实（如“用户喜欢喝美式咖啡”）。开启后改为保存这轮对话的原文，细节更全，但记忆更冗长、更难被准确查到。“全部保存”模式下始终保存原文。 |
+| 保存原文时包含用户的消息（`retain_user_message`） | 开启 | 仅在保存对话原文时生效：原文里是否包含用户说的话。一般保持开启。 |
+| 保存原文时包含机器人的回复（`retain_assistant_message`） | 开启 | 仅在保存对话原文时生效：原文里是否包含机器人的回复。关闭可减少冗余内容。 |
+
+### 去重
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 跳过重复的记忆（`retain_dedupe_enabled`） | 开启 | 保存前先查一下已有记忆，内容几乎相同的就不再重复保存。用户纠正旧信息时（如“我搬到上海了”）始终会保存。 |
+| 相似度达到多少算重复（0～1）（`retain_dedupe_threshold`） | `0.85` | 新记忆与已有记忆的相似度达到此值时视为重复并跳过。调低会跳过更多相近内容；调高则只跳过几乎一模一样的内容。 |
+| 查重时比对的已有记忆条数（`retain_dedupe_limit`） | `5` | 保存前取出最相关的几条已有记忆做比对。条数越多查重越全，但请求稍慢。 |
+
+### AI 记忆分析
+
+| 页面名称 | 默认值 | 说明 |
+|---|---|---|
+| 用 AI 整理和查找记忆（`memory_ai_enabled`） | 关闭 | 由 AI 判断哪些内容值得记、把对话整理成简洁的事实，并在查找记忆时补充更多相关搜索词，效果更好。代价是每轮对话会额外调用 1～2 次 LLM，建议选一个便宜、快速的小模型。 |
+| 整理记忆使用的模型（`memory_ai_provider_id`） | 空 | 仅在开启“用 AI 整理和查找记忆”后生效。推荐选择便宜、快速的小模型；留空则使用当前对话正在用的模型。 |
+| 所选模型出错时改用当前对话模型（`memory_ai_fallback_to_current_provider`） | 开启 | 上一项选择的模型调用失败时，是否改用当前对话的模型重试。关闭后本次跳过 AI，改用不调用 AI 的默认方式处理。 |
+| AI 把握度低于此值时不保存（`memory_ai_min_confidence`） | `0.7` | AI 判断每条记忆时会给出 0～1 的把握度。数值越高，保存得越谨慎、记忆越少越准；数值越低，保存得越多。 |
 ## 写入判定策略
 
 写入流程现在采用 AI 优先、规则兜底：
