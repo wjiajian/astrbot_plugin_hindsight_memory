@@ -55,6 +55,8 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 | 页面名称 | 默认值 | 说明 |
 |---|---|---|
 | 启用长期记忆（`enabled`） | 开启 | 总开关。关闭后插件不再读取或写入任何记忆，已保存的记忆不受影响。 |
+| 接入陪伴插件（`companion_provider_enabled`） | 关闭 | 向陪伴插件（`astrbot_plugin_private_companion` 7.0.7+）注册为外部记忆 Provider，由本插件承接模型侧记忆，并接收它产生的日记、梦境与主动消息。默认关闭，需要主动打开；没装陪伴插件时此项无效果。 |
+| 允许保存含个人信息的角色记录（`companion_retain_personal_sensitive`） | 关闭 | 角色记录里出现邮箱、手机号、身份证号或地址时，默认不写入 Hindsight；打开后才保存。硬凭据（密码、API Key、私钥）无论此项如何都不会写入。 |
 | Hindsight 服务地址（`api_base`） | `https://api.hindsight.vectorize.io` | 保持默认即可。目前只支持 Hindsight Cloud，不支持自行部署的 Hindsight。 |
 | Hindsight API Key（必填）（`api_key`） | 空 | 在 Hindsight Cloud 后台创建。建议创建只能访问对应 Memory Bank 的 Key（Bank-scoped），更安全。 |
 | Memory Bank ID（必填）（`bank_id`） | 空 | Memory Bank 是存放记忆的“仓库”。先在 Hindsight Cloud 后台创建一个，再把它的 ID 填到这里。 |
@@ -136,6 +138,29 @@ Hindsight 仍固定使用原有 recall API 和 `tags_match: all_strict`，本版
 - `/hindsight help`：显示命令帮助。
 
 `/hindsight on` 和 `/hindsight off` 的状态保存在 AstrBot 插件数据目录中，只影响当前会话 scope，不会修改 Hindsight Cloud 中已有的记忆。
+
+## 与陪伴插件（private_companion）协同
+
+[陪伴插件](https://github.com/menglimi/astrbot_plugin_private_companion)（`astrbot_plugin_private_companion`）从 7.0.7 起对外提供 `companion.external-memory.v1` 记忆 Provider 接口。打开「接入陪伴插件」（`companion_provider_enabled`，**默认关闭**）后，本插件会检测它的 `extension_api` 并注册：
+
+- **记忆归属**：注册时声明 `handles_model_memory=True`。本插件的记忆注入与保存本来就在 AstrBot 的 LLM 钩子里完成，因此由本插件承担模型侧记忆，陪伴插件让自己的内置记忆注入与记忆工具让位，模型只会看到一份记忆叙事。
+- **接收角色记录**：陪伴插件产生的日记、梦境（`kind=persona_life`）和主动消息（`kind=proactive_message`）会写进 Hindsight，按 `memory_id` 幂等，同一条记录重复推送不会写两遍。这类记录落在 `scope:persona` 标签下，不按某个私聊用户召回。
+- **敏感内容**：写入前过一遍和对话保存相同的判定——密码、API Key、私钥这类硬凭据一律不写；邮箱、手机号、身份证号、地址这类个人信息默认也不写，需要时打开「允许保存含个人信息的角色记录」（`companion_retain_personal_sensitive`）。
+- **身份字段**：只写带盐哈希。陪伴插件会把平台原生的会话身份（私聊里就是 sender ID）拼进 `session_id`，原样落库等于绕过正文过滤上传身份，因此写进 Hindsight 的是 `session_id_hash`，不是原值。
+- **失败补写**：写进 Hindsight **确定失败**（如服务端 4xx、连接就没建起来）时，记录先进本地队列，下一次成功写入时顺带补写。补写有明确边界：只在后续成功写入时触发（没有后台定时任务）、每次最多 10 条且不超过本次回调超时、队列上限 50 条、超过 24 小时丢弃（从**第一次失败**起算，重试不会续期）。
+- **结果未知不重试**：超时、连接中途断开、5xx、被宿主超时取消时，远端可能已经收下这条记录，所以不进队列、不重写——账本里会留一条 `pending` 记账，同一条记录之后再推送会被当成"可能写过"跳过。取舍是宁可少一条（原件仍在陪伴插件自己的库里，可以人工补），也不要同一篇日记在记忆里出现两次。
+- **幂等范围**：账本按「服务地址 + bank + `memory_id`」记账，保留 30 天、最多 5000 条。换 bank 或换服务地址就是换分区，不会把在别处写过的记录当成这边已写过，也不会把旧目标排队的失败记录补写到新目标。
+- **撤销**：关闭开关、或停用/卸载本插件时先停止接受新写入，等在途写入（含挂在后面的补写）结束再注销；注销失败会保留注册以便下次重试，但这条注册已经不再被选中。
+
+需要知道的三件事：
+
+1. **升级不会自动生效**：默认关闭，已有安装升级后行为不变，要你主动打开。
+2. **陪伴插件已有的记忆不迁移**：开启后模型上下文里的长期记忆来自 Hindsight；陪伴插件自己库里的旧记忆仍留在它那边，只是不再注入。反过来也一样——Hindsight 里已有的记忆不会被写进陪伴插件。
+3. **关闭某个会话的记忆时两边都会静默**：provider 注册是安装级的，`write(record)` 虽然带着 `context.scope`、但归属选择和 `is_active()` 都没有会话维度；如果你对某个私聊/群执行 `/hindsight off` 或关掉对应的记忆范围开关，那个会话既不会被陪伴插件记住，也不会被 Hindsight 召回。要恢复就重新打开那类记忆范围。
+
+这两条兼容限制是有意保留的（默认关闭、安装级接管），代价写在这里：会话关闭不会自动回退到陪伴插件自己的记忆，旧记忆不迁移，新导入的角色记录也不参与私聊/群聊召回；而"会话关闭"也不等于停止角色记录上传——角色日记与主动消息仍然会写进 Hindsight，只有正文含敏感内容时才会被拦下。
+
+不注册的部分：`read` 回调（召回走本插件自己的 LLM 钩子）和 `summary`（Hindsight Cloud 没有计数接口）。同时装了「我会牢牢记住你」时，两个记忆插件都符合承接条件，建议只保留一个。
 
 ## Scope 隔离策略
 
