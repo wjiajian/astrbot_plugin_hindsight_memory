@@ -69,6 +69,9 @@ class FilterStub:
     def command_group(self, name):
         return CommandGroupStub()
 
+    def command(self, name):
+        return lambda func: func
+
 
 class StarStub:
     def __init__(self, context):

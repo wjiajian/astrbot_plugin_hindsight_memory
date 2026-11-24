@@ -94,18 +94,24 @@ class HindsightMemoryPlugin(Star):
 
         try:
             queries = await self._recall_queries(event, query, recent)
-            formatted = await run_manual_recall_for_tag_sets(
-                await self._client(),
-                bank_id=self._bank_id(),
-                query=query,
-                tag_sets=[recall_scope.tags for recall_scope in scopes.recall_scopes],
-                limit=self._recall_limit(),
-                item_max_chars=self._recall_item_max_chars(),
-                max_extract_depth=self._memory_extract_max_depth(),
-                queries=queries,
-                empty_message="",
-                guidance=True,
-            )
+            client = await self._client()
+            chunks: list[str] = []
+            for index, bank in enumerate(self._recall_banks(event)):
+                chunk = await run_manual_recall_for_tag_sets(
+                    client,
+                    bank_id=bank,
+                    query=query,
+                    tag_sets=[recall_scope.tags for recall_scope in scopes.recall_scopes],
+                    limit=self._recall_limit(),
+                    item_max_chars=self._recall_item_max_chars(),
+                    max_extract_depth=self._memory_extract_max_depth(),
+                    queries=queries,
+                    empty_message="",
+                    guidance=index == 0,
+                )
+                if chunk:
+                    chunks.append(chunk)
+            formatted = "\n".join(chunks)
         except HindsightClientError as exc:
             _log_warning(f"Hindsight recall failed: {exc}")
             return
@@ -164,12 +170,12 @@ class HindsightMemoryPlugin(Star):
                     if (retain_scope.scope_type, content) in written:
                         continue
                     written.add((retain_scope.scope_type, content))
-                    retain_action = await self._retain_dedupe_action(client, content, retain_scope, decision)
+                    retain_action = await self._retain_dedupe_action(client, content, retain_scope, decision, event)
                     if retain_action == "duplicate":
                         _log_debug(f"Hindsight retain skipped duplicate: {retain_scope.scope_type}")
                         continue
                     await client.retain(
-                        bank_id=self._bank_id(),
+                        bank_id=self._bank_id(event),
                         content=content,
                         tags=retain_scope.tags,
                         metadata=self._retain_metadata(retain_scope.metadata, decision, retain_action),
@@ -199,7 +205,8 @@ class HindsightMemoryPlugin(Star):
             f"配置完整：{'是' if self._config_complete() else '否'}",
         ]
         if self._config_complete():
-            status = await (await self._client()).check_status(self._bank_id())
+            lines.extend(self._status_lines(event, scope))
+            status = await (await self._client()).check_status(self._bank_id(event))
             lines.append(f"连接检查：{status.message}")
         else:
             lines.append("连接检查：跳过，请先填写 api_key 和 bank_id。")
@@ -231,7 +238,7 @@ class HindsightMemoryPlugin(Star):
             queries = await self._recall_queries(event, query)
             result = await run_manual_recall_for_tag_sets(
                 await self._client(),
-                bank_id=self._bank_id(),
+                bank_id=self._bank_id(event),
                 query=query,
                 tag_sets=[recall_scope.tags for recall_scope in scopes.recall_scopes],
                 limit=self._recall_limit(),
@@ -276,6 +283,60 @@ class HindsightMemoryPlugin(Star):
         scope = scopes.primary
         yield event.plain_result(build_help_text(self.store.is_scope_enabled(scope.scope_key)))
 
+    @filter.command("私密")
+    async def go_private(self, event: AstrMessageEvent):
+        """进入私密模式：这段时间只写本端私有库，不写共享库。"""
+        scopes = self._scopes(event)
+        if scopes is None:
+            yield event.plain_result("无法确定当前会话，未切换私密模式。")
+            return
+        scope = scopes.primary
+        if not self._is_owner_scope(scope):
+            yield event.plain_result("私密模式只在管理员的私聊里可用。")
+            return
+        self.store.set_private_scope(scope.scope_key, True)
+        await self._reset_context(event)
+        yield event.plain_result(
+            "已进入私密模式：这段时间的记忆只写入本端私有库，不会进共享库。发「/结束私密」退出。"
+        )
+
+    @filter.command("结束私密")
+    async def end_private(self, event: AstrMessageEvent):
+        """退出私密模式：回到共享库读写。"""
+        scopes = self._scopes(event)
+        if scopes is None:
+            yield event.plain_result("无法确定当前会话，未切换私密模式。")
+            return
+        scope = scopes.primary
+        self.store.set_private_scope(scope.scope_key, False)
+        await self._reset_context(event)
+        yield event.plain_result("已结束私密模式：之后的普通聊天重新写入共享库。")
+
+    async def _reset_context(self, event: AstrMessageEvent) -> None:
+        """Start a fresh conversation so private and normal turns do not share context."""
+        try:
+            manager = getattr(self._context, "conversation_manager", None)
+            umo = getattr(event, "unified_msg_origin", "")
+            new_conversation = getattr(manager, "new_conversation", None)
+            if callable(new_conversation) and umo:
+                result = new_conversation(umo)
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as exc:  # a failed reset must not break the mode switch
+            logger.warning(f"Hindsight: conversation reset failed: {exc}")
+
+    def _shared_bank(self) -> str:
+        return str(self.config.get("shared_bank_id") or "").strip()
+
+    def _status_lines(self, event: AstrMessageEvent | None, scope: MemoryScope | None) -> list[str]:
+        """Extra status rows that only make sense when shared routing is on."""
+        if not self._shared_bank():
+            return []
+        lines = [f"当前记忆库：{self._bank_id(event)}"]
+        if scope is not None:
+            lines.append(f"私密模式：{'开启' if self.store.is_private_scope(scope.scope_key) else '关闭'}")
+        return lines
+
     async def _client(self) -> HindsightClient:
         signature = self._client_signature()
         if self.hindsight_client is not None and self.hindsight_client_signature == signature:
@@ -300,6 +361,57 @@ class HindsightMemoryPlugin(Star):
             self._request_timeout_seconds(),
         )
 
+    def _admin_ids(self) -> set[str]:
+        """Ids treated as the bot owner.
+
+        `owner_user_ids` (comma separated) wins; otherwise fall back to the
+        AstrBot administrator list, which is the same set the user already
+        maintains in the WebUI.
+        """
+        raw = self.config.get("owner_user_ids")
+        ids: set[str] = set()
+        if isinstance(raw, str):
+            raw = raw.replace("，", ",").split(",")
+        if isinstance(raw, (list, tuple, set)):
+            ids = {str(x).strip() for x in raw if str(x).strip()}
+        if ids:
+            return ids
+        try:
+            from astrbot.core.config import astrbot_config
+
+            return {str(x).strip() for x in (astrbot_config.get("admins_id") or []) if str(x).strip()}
+        except Exception:
+            pass
+        try:  # last resort: the config file AstrBot runs with (cwd is the app root)
+            import pathlib
+
+            data = json.loads(pathlib.Path("data/cmd_config.json").read_text(encoding="utf-8-sig"))
+            return {str(x).strip() for x in (data.get("admins_id") or []) if str(x).strip()}
+        except Exception:
+            return set()
+
+    def _is_admin_event(self, event: AstrMessageEvent) -> bool:
+        """Whether this event was sent by the owner.
+
+        `event.is_admin()` only works when the platform fills a group-style
+        role; OneBot private messages carry none, so it is always False there.
+        Fall back to matching the sender id against the owner/admin ids.
+        """
+        try:
+            if event.is_admin():
+                return True
+        except Exception:
+            pass
+        try:
+            sender = str(event.get_sender_id())
+        except Exception:
+            return False
+        return sender in self._admin_ids()
+
+    @staticmethod
+    def _is_owner_scope(scope: MemoryScope) -> bool:
+        return scope.metadata.get("source") == "astrbot-private-owner"
+
     def _scopes(self, event: AstrMessageEvent) -> MemoryScopes | None:
         try:
             scopes = build_scopes_from_event(event, self.salt)
@@ -308,6 +420,23 @@ class HindsightMemoryPlugin(Star):
             return None
         if scopes.primary.scope_type == "private" and _event_looks_like_group(event):
             _log_debug("Hindsight scope fallback: group-like event has no group_id; using private scope.")
+        if (
+            scopes.primary.scope_type == "private"
+            and not _event_looks_like_group(event)
+            and self._admin_ids()
+            and self._is_admin_event(event)
+        ):
+            # The owner's private chat is its own scope: it may speak to the
+            # shared bank, and it is the only place `/私密` is accepted.
+            owner = MemoryScope(
+                scope_type="private",
+                platform_id=scopes.primary.platform_id,
+                umo_hash=scopes.primary.umo_hash,
+                tags=[],
+                scope_key=f"owner-private:{scopes.primary.platform_id}:{scopes.primary.umo_hash}",
+                metadata={"source": "astrbot-private-owner", "scope": "private"},
+            )
+            return MemoryScopes(primary=owner, recall_scopes=[owner], retain_scopes=[owner])
         return scopes
 
     def _base_enabled(self) -> bool:
@@ -316,8 +445,41 @@ class HindsightMemoryPlugin(Star):
     def _config_complete(self) -> bool:
         return bool(str(self.config.get("api_key") or "").strip() and self._bank_id())
 
-    def _bank_id(self) -> str:
-        return str(self.config.get("bank_id") or "").strip()
+    def _bank_id(self, event: AstrMessageEvent | None = None) -> str:
+        """Bank to write to (also the single bank to read when shared routing is off).
+
+        Owner private chat writes to `shared_bank_id`; everything else, and the
+        owner while in private mode, writes to `bank_id`.
+        """
+        base = str(self.config.get("bank_id") or "").strip()
+        shared = str(self.config.get("shared_bank_id") or "").strip()
+        if not shared or event is None:
+            return base
+        scopes = self._scopes(event)
+        if scopes is None or not self._is_owner_scope(scopes.primary):
+            return base
+        if self.store.is_private_scope(scopes.primary.scope_key):
+            return base
+        return shared
+
+    def _recall_banks(self, event: AstrMessageEvent | None = None) -> list[str]:
+        """Banks to search.
+
+        Outside private mode the owner only reads the shared bank; in private
+        mode both the local bank and the shared one are read, because private
+        content must never be written to the shared bank but the owner still
+        wants the shared history available.
+        """
+        base = str(self.config.get("bank_id") or "").strip()
+        shared = str(self.config.get("shared_bank_id") or "").strip()
+        if not shared or event is None:
+            return [base]
+        scopes = self._scopes(event)
+        if scopes is None or not self._is_owner_scope(scopes.primary):
+            return [base]
+        if self.store.is_private_scope(scopes.primary.scope_key):
+            return [base, shared]
+        return [shared]
 
     def _recall_limit(self) -> int:
         try:
@@ -412,11 +574,12 @@ class HindsightMemoryPlugin(Star):
         content: str,
         retain_scope: MemoryScope,
         decision: RetainDecision,
+        event: AstrMessageEvent | None = None,
     ) -> str:
         if not _bool_config(self.config, "retain_dedupe_enabled", True):
             return "not_checked"
         try:
-            raw = await client.recall(bank_id=self._bank_id(), query=content, tags=retain_scope.tags)
+            raw = await client.recall(bank_id=self._bank_id(event), query=content, tags=retain_scope.tags)
             existing_texts = extract_memory_texts(
                 raw,
                 limit=self._retain_dedupe_limit(),

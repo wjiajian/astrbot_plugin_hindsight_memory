@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import json
 import secrets
@@ -27,6 +27,7 @@ STATE_FILE = "scope_state.json"
 @dataclass
 class ScopeSwitchState:
     disabled_scopes: set[str]
+    private_scopes: set[str] = field(default_factory=set)
 
 
 class PluginStateStore:
@@ -57,6 +58,18 @@ class PluginStateStore:
             state.disabled_scopes.add(scope_key)
         self._save_state(state)
 
+    def is_private_scope(self, scope_key: str) -> bool:
+        """Whether this scope is currently in private mode (no shared writes)."""
+        return scope_key in self._load_state().private_scopes
+
+    def set_private_scope(self, scope_key: str, enabled: bool) -> None:
+        state = self._load_state()
+        if enabled:
+            state.private_scopes.add(scope_key)
+        else:
+            state.private_scopes.discard(scope_key)
+        self._save_state(state)
+
     def _load_state(self) -> ScopeSwitchState:
         if not self.state_path.exists():
             return ScopeSwitchState(disabled_scopes=set())
@@ -71,10 +84,19 @@ class PluginStateStore:
         disabled = raw.get("disabled_scopes", [])
         if not isinstance(disabled, list):
             disabled = []
-        return ScopeSwitchState(disabled_scopes={str(item) for item in disabled})
+        private = raw.get("private_scopes", [])
+        if not isinstance(private, list):
+            private = []
+        return ScopeSwitchState(
+            disabled_scopes={str(item) for item in disabled},
+            private_scopes={str(item) for item in private},
+        )
 
     def _save_state(self, state: ScopeSwitchState) -> None:
-        payload = {"disabled_scopes": sorted(state.disabled_scopes)}
+        payload = {
+            "disabled_scopes": sorted(state.disabled_scopes),
+            "private_scopes": sorted(state.private_scopes),
+        }
         tmp_path = self.state_path.with_name(f"{self.state_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

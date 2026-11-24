@@ -83,8 +83,16 @@
     "description": "自动保存的严格程度",
     "type": "string",
     "default": "balanced",
-    "options": ["balanced", "strict", "all"],
-    "labels": ["均衡（推荐）", "严格", "全部保存"],
+    "options": [
+      "balanced",
+      "strict",
+      "all"
+    ],
+    "labels": [
+      "均衡（推荐）",
+      "严格",
+      "全部保存"
+    ],
     "hint": "均衡：只保存偏好、身份、约定这类长期有用的信息，忽略闲聊。严格：只有用户明确说“记住……”时才保存。全部保存：每轮对话原样保存，记忆库增长快、噪音多，仅用于兼容旧版本。"
   },
   "retain_min_chars": {
@@ -194,5 +202,17 @@
     "type": "int",
     "default": 8,
     "hint": "超过这个时间没有响应就放弃本次读写，机器人照常回复。网络较慢时可适当调大。"
+  },
+  "shared_bank_id": {
+    "type": "string",
+    "description": "共享记忆库名：填写后，管理员的私聊写入该库，其他会话仍用上面的 Memory Bank ID",
+    "hint": "留空表示不启用共享库路由。新建的库需先在 Hindsight 里存在。",
+    "default": ""
+  },
+  "owner_user_ids": {
+    "type": "string",
+    "description": "管理员（主人）的用户 ID，逗号分隔；留空则使用 AstrBot 全局管理员列表",
+    "hint": "只有这些人的私聊可以读写共享库，也只有在他们的私聊里 /私密 才可用。",
+    "default": ""
   }
 }
