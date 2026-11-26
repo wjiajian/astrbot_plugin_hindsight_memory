@@ -66,6 +66,9 @@ class FilterStub:
     def on_llm_response(self):
         return lambda func: func
 
+    def on_waiting_llm_request(self):
+        return lambda func: func
+
     def command_group(self, name):
         return CommandGroupStub()
 
@@ -227,7 +230,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            main, "run_manual_recall_for_tag_sets", new=AsyncMock(return_value="<hindsight_memory>x</hindsight_memory>")
+            main, "run_recall_for_targets", new=AsyncMock(return_value="<hindsight_memory>x</hindsight_memory>")
         ) as recall:
             await plugin.on_llm_request(event, req)
 
@@ -252,7 +255,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
         event = ExtraEvent("谢谢")
         req = SimpleNamespace(contexts=[{"role": "user", "content": "上一句"}], extra_user_content_parts=[])
 
-        with patch.object(main, "run_manual_recall_for_tag_sets", new=AsyncMock()) as recall:
+        with patch.object(main, "run_recall_for_targets", new=AsyncMock()) as recall:
             await plugin.on_llm_request(event, req)
 
         recall.assert_not_called()
@@ -264,7 +267,7 @@ class MainMemoryAiTests(unittest.IsolatedAsyncioTestCase):
         event = ExtraEvent("那前者呢？")
         req = SimpleNamespace(contexts=[{"role": "user", "content": "上一句"}], extra_user_content_parts=[])
 
-        with patch.object(main, "run_manual_recall_for_tag_sets", new=AsyncMock(return_value="")) as recall:
+        with patch.object(main, "run_recall_for_targets", new=AsyncMock(return_value="")) as recall:
             await plugin.on_llm_request(event, req)
 
         self.assertEqual(event.get_extra(main.RECENT_CONTEXT_EXTRA_KEY), [])

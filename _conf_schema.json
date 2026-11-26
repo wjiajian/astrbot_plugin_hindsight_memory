@@ -206,13 +206,19 @@
   "shared_bank_id": {
     "type": "string",
     "description": "共享记忆库名：填写后，管理员的私聊写入该库，其他会话仍用上面的 Memory Bank ID",
-    "hint": "留空表示不启用共享库路由。新建的库需先在 Hindsight 里存在。",
+    "hint": "必须与本端库不同，并与管理员平台 ID 一起填写；同一个 API Key 必须能访问两个库。",
+    "default": ""
+  },
+  "owner_platform_id": {
+    "type": "string",
+    "description": "允许使用共享记忆的 AstrBot 平台实例 ID",
+    "hint": "填写平台实例 ID（不是 OneBot、QQ 等平台类型名），用于避免跨平台用户 ID 撞号。留空不启用共享路由。",
     "default": ""
   },
   "owner_user_ids": {
     "type": "string",
     "description": "管理员（主人）的用户 ID，逗号分隔；留空则使用 AstrBot 全局管理员列表",
-    "hint": "只有这些人的私聊可以读写共享库，也只有在他们的私聊里 /私密 才可用。",
+    "hint": "仅匹配所配置平台上的用户。显式填了名单就只认名单，不再回退到全局管理员。",
     "default": ""
   }
 }
