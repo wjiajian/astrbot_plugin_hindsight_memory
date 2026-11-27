@@ -58,7 +58,7 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 | 接入陪伴插件（`companion_provider_enabled`） | 关闭 | 向陪伴插件（`astrbot_plugin_private_companion` 7.0.7+）注册为外部记忆 Provider，由本插件承接模型侧记忆，并接收它产生的日记、梦境与主动消息。默认关闭，需要主动打开；没装陪伴插件时此项无效果。 |
 | 允许保存含个人信息的角色记录（`companion_retain_personal_sensitive`） | 关闭 | 角色记录里出现邮箱、手机号、身份证号或地址时，默认不写入 Hindsight；打开后才保存。硬凭据（密码、API Key、私钥）无论此项如何都不会写入。 |
 | Hindsight 服务地址（`api_base`） | `https://api.hindsight.vectorize.io` | 保持默认即可。目前只支持 Hindsight Cloud，不支持自行部署的 Hindsight。 |
-| Hindsight API Key（必填）（`api_key`） | 空 | 在 Hindsight Cloud 后台创建。建议创建只能访问对应 Memory Bank 的 Key（Bank-scoped），更安全。 |
+| Hindsight API Key（必填）（`api_key`） | 空 | 在 Hindsight Cloud 后台创建。只使用本端库时，建议使用限于该库的 Key；启用共享记忆时，同一个 Key 需要能访问本端和共享两个库。 |
 | Memory Bank ID（必填）（`bank_id`） | 空 | Memory Bank 是存放记忆的“仓库”。先在 Hindsight Cloud 后台创建一个，再把它的 ID 填到这里。 |
 | 连接 Hindsight 的超时时间（秒）（`request_timeout_seconds`） | `8` | 超过这个时间没有响应就放弃本次读写，机器人照常回复。网络较慢时可适当调大。 |
 
@@ -68,6 +68,20 @@ pip install -r data/plugins/astrbot_plugin_hindsight_memory/requirements.txt
 |---|---|---|
 | 私聊中使用记忆（`enable_private_memory`） | 开启 | 机器人会记住私聊对象的信息，并在之后的私聊中想起来。每个用户的记忆相互隔离。 |
 | 群聊中使用记忆（`enable_group_memory`） | 开启 | 机器人会记住群规则、群项目等群内公共信息，以及群成员在该群里的个人信息。不同群的记忆相互隔离。 |
+
+### 管理员共享记忆与私密模式
+
+共享功能默认关闭。先创建独立的共享库，再填 `shared_bank_id` 和 AstrBot 的平台实例 ID `owner_platform_id`（不是适配器类型）。`shared_bank_id` 和 `bank_id` 必须不同，同一个 `api_key` 必须允许对两个库执行所需的读写；只授权本端库的 Key 无法访问共享库。
+
+`owner_user_ids` 可填逗号分隔的用户 ID。填写后只允许名单中的用户；留空才使用 AstrBot 管理员身份或全局管理员列表。无论哪种方式，都必须匹配所填的**同一个平台实例**，且必须是私聊。
+
+- 普通管理员私聊只读写共享库。群聊及其他用户仍走本端库和原有标签。
+- 消息到达时就确定这一轮用哪个库：AstrBot 在排队等会话锁之前先调用一次钩子，之后即使模式被切换，这轮仍按到达时的模式处理。若等待期间所选对话被换掉，本轮降级为只读写本端库。
+- 只对平台自身能担保发送者身份的适配器生效。WebChat 这类由调用方自报用户名的平台一律不进共享路由。
+- `/私密` 后只向本端库写入，读本端库时仍按私聊标签过滤。自动召回和 `/hindsight recall` 均可同时查共享库，合并后的总条数不超过 `recall_limit`。召回查询仍会发给 Hindsight；私密模式控制的是长期记忆的写入位置，并不意味着内容不经模型或检索服务处理。
+- `/结束私密` 恢复共享读写。两个命令都必须先成功创建并切换到新对话，才会保存新模式；原对话不会删除，请不要手动切回带有私密内容的旧对话继续共享聊天。
+- 状态文件损坏、被清空或被删掉时，暂停记忆读写，且不会自动覆盖文件。请恢复 `scope_state.json` 的有效备份后再试。旧版留下的 `scope_state.json`（没有版本字段）仍按原样读取，下次保存时自动升级。
+- 去重仍为写前检索，不保证并发写入下的原子去重。
 
 ### 召回
 

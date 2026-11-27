@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import logging
 import secrets
 import uuid
 from typing import Any, Sequence
-
-from astrbot.api import logger
 
 from .hindsight_client import HindsightClient, HindsightClientError
 from .memory_formatter import (
@@ -20,13 +19,18 @@ from .memory_formatter import (
 )
 
 
+logger = logging.getLogger(__name__)
 SALT_FILE = "salt.txt"
 STATE_FILE = "scope_state.json"
+STATE_VERSION = 2
+STATE_MARKER_FILE = "scope_state.version"
 
 
 @dataclass
 class ScopeSwitchState:
     disabled_scopes: set[str]
+    private_scopes: set[str] = field(default_factory=set)
+    private_conversations: set[str] = field(default_factory=set)
 
 
 class PluginStateStore:
@@ -35,6 +39,7 @@ class PluginStateStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.salt_path = self.data_dir / SALT_FILE
         self.state_path = self.data_dir / STATE_FILE
+        self.marker_path = self.data_dir / STATE_MARKER_FILE
 
     def get_or_create_salt(self) -> str:
         if self.salt_path.exists():
@@ -47,38 +52,95 @@ class PluginStateStore:
         return salt
 
     def is_scope_enabled(self, scope_key: str) -> bool:
-        return scope_key not in self._load_state().disabled_scopes
+        state = self._load_state()
+        return state is not None and scope_key not in state.disabled_scopes
 
     def set_scope_enabled(self, scope_key: str, enabled: bool) -> None:
-        state = self._load_state()
+        state = self._require_state()
         if enabled:
             state.disabled_scopes.discard(scope_key)
         else:
             state.disabled_scopes.add(scope_key)
         self._save_state(state)
 
-    def _load_state(self) -> ScopeSwitchState:
-        if not self.state_path.exists():
-            return ScopeSwitchState(disabled_scopes=set())
+    def is_private_scope(self, scope_key: str) -> bool | None:
+        """Return unknown (not normal mode) if persisted state is unreadable."""
+        state = self._load_state()
+        return None if state is None else scope_key in state.private_scopes
+
+    def set_private_scope(self, scope_key: str, enabled: bool) -> None:
+        state = self._require_state()
+        if enabled:
+            state.private_scopes.add(scope_key)
+        else:
+            state.private_scopes.discard(scope_key)
+        self._save_state(state)
+
+    def is_private_conversation(self, conversation_id: str) -> bool | None:
+        if not conversation_id:
+            return False
+        state = self._load_state()
+        return None if state is None else conversation_id in state.private_conversations
+
+    def mark_private_conversation(self, conversation_id: str, private: bool) -> None:
+        if not conversation_id:
+            return
+        state = self._require_state()
+        if private:
+            state.private_conversations.add(conversation_id)
+        else:
+            state.private_conversations.discard(conversation_id)
+        self._save_state(state)
+
+    def _require_state(self) -> ScopeSwitchState:
+        state = self._load_state()
+        if state is None:
+            raise OSError("scope state is unreadable; refusing to overwrite it")
+        return state
+
+    def _load_state(self) -> ScopeSwitchState | None:
         try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            logger.warning(f"Hindsight scope state file is invalid JSON: {self.state_path}: {exc}")
+            text = self.state_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if self.marker_path.exists():
+                logger.warning("Hindsight scope state file is missing; shared routing paused")
+                return None
             return ScopeSwitchState(disabled_scopes=set())
         except OSError as exc:
-            logger.warning(f"Hindsight scope state file could not be read: {self.state_path}: {exc}")
-            return ScopeSwitchState(disabled_scopes=set())
-        disabled = raw.get("disabled_scopes", [])
-        if not isinstance(disabled, list):
-            disabled = []
-        return ScopeSwitchState(disabled_scopes={str(item) for item in disabled})
+            logger.warning("Hindsight scope state unavailable: %s", exc)
+            return None
+        try:
+            raw = json.loads(text)
+            if not isinstance(raw, dict):
+                raise ValueError("scope state must be an object")
+            disabled = raw.get("disabled_scopes", [])
+            private = raw.get("private_scopes", [])
+            conversations = raw.get("private_conversations", [])
+            if not all(isinstance(item, list) for item in (disabled, private, conversations)):
+                raise ValueError("scope state entries must be lists")
+            if raw.get("version") != STATE_VERSION and self.marker_path.exists():
+                raise ValueError("scope state version is missing or unknown")
+        except ValueError as exc:
+            logger.warning("Hindsight scope state unavailable: %s", exc)
+            return None
+        return ScopeSwitchState(
+            disabled_scopes={str(item) for item in disabled},
+            private_scopes={str(item) for item in private},
+            private_conversations={str(item) for item in conversations},
+        )
 
     def _save_state(self, state: ScopeSwitchState) -> None:
-        payload = {"disabled_scopes": sorted(state.disabled_scopes)}
+        payload = {
+            "version": STATE_VERSION,
+            "disabled_scopes": sorted(state.disabled_scopes),
+            "private_conversations": sorted(state.private_conversations),
+            "private_scopes": sorted(state.private_scopes),
+        }
         tmp_path = self.state_path.with_name(f"{self.state_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp_path.replace(self.state_path)
+            self.marker_path.write_text(str(STATE_VERSION), encoding="utf-8")
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -132,11 +194,28 @@ async def run_manual_recall_for_tag_sets(
     empty_message: str = "当前会话 scope 下没有召回到相关记忆。",
     guidance: bool = False,
 ) -> str:
+    return await run_recall_for_targets(
+        client, [(bank_id, tuple(tags)) for tags in tag_sets], query, limit,
+        item_max_chars, max_extract_depth, queries, empty_message, guidance,
+    )
+
+
+async def run_recall_for_targets(
+    client: HindsightClient,
+    targets: Sequence[tuple[str, tuple[str, ...]]],
+    query: str,
+    limit: int,
+    item_max_chars: int = DEFAULT_ITEM_MAX_CHARS,
+    max_extract_depth: int = MAX_EXTRACT_DEPTH,
+    queries: Sequence[str] | None = None,
+    empty_message: str = "当前会话 scope 下没有召回到相关记忆。",
+    guidance: bool = False,
+) -> str:
     recall_queries = _recall_queries(query, queries)
     results = await asyncio.gather(
         *(
-            client.recall(bank_id=bank_id, query=recall_query, tags=tags)
-            for tags in tag_sets
+            client.recall(bank_id=bank_id, query=recall_query, tags=list(tags))
+            for bank_id, tags in targets
             for recall_query in recall_queries
         ),
         return_exceptions=True,

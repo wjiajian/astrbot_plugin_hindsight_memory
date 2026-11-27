@@ -83,8 +83,16 @@
     "description": "自动保存的严格程度",
     "type": "string",
     "default": "balanced",
-    "options": ["balanced", "strict", "all"],
-    "labels": ["均衡（推荐）", "严格", "全部保存"],
+    "options": [
+      "balanced",
+      "strict",
+      "all"
+    ],
+    "labels": [
+      "均衡（推荐）",
+      "严格",
+      "全部保存"
+    ],
     "hint": "均衡：只保存偏好、身份、约定这类长期有用的信息，忽略闲聊。严格：只有用户明确说“记住……”时才保存。全部保存：每轮对话原样保存，记忆库增长快、噪音多，仅用于兼容旧版本。"
   },
   "retain_min_chars": {
@@ -194,5 +202,23 @@
     "type": "int",
     "default": 8,
     "hint": "超过这个时间没有响应就放弃本次读写，机器人照常回复。网络较慢时可适当调大。"
+  },
+  "shared_bank_id": {
+    "type": "string",
+    "description": "共享记忆库名：填写后，管理员的私聊写入该库，其他会话仍用上面的 Memory Bank ID",
+    "hint": "必须与本端库不同，并与管理员平台 ID 一起填写；同一个 API Key 必须能访问两个库。",
+    "default": ""
+  },
+  "owner_platform_id": {
+    "type": "string",
+    "description": "允许使用共享记忆的 AstrBot 平台实例 ID",
+    "hint": "填写平台实例 ID（不是 OneBot、QQ 等平台类型名），用于避免跨平台用户 ID 撞号。留空不启用共享路由。",
+    "default": ""
+  },
+  "owner_user_ids": {
+    "type": "string",
+    "description": "管理员（主人）的用户 ID，逗号分隔；留空则使用 AstrBot 全局管理员列表",
+    "hint": "仅匹配所配置平台上的用户。显式填了名单就只认名单，不再回退到全局管理员。",
+    "default": ""
   }
 }
